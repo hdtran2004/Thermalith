@@ -39,6 +39,9 @@ public static class RowEncoder
 
         /// <summary>Use the compact indexed packet for rows with ≤6 black pixels.</summary>
         public bool UseIndexedRows { get; init; } = true;
+
+        /// <summary>Disable vertical compression for diagnostic hardware testing.</summary>
+        public bool UseRepeatedRows { get; init; } = true;
     }
 
     /// <summary>
@@ -115,7 +118,7 @@ public static class RowEncoder
 
             // Run-length: how many following rows are byte-identical to this one.
             var repeat = 1;
-            while (y + repeat < bitmap.HeightPx && bitmap.Row(y + repeat).SequenceEqual(row))
+            while (options.UseRepeatedRows && y + repeat < bitmap.HeightPx && bitmap.Row(y + repeat).SequenceEqual(row))
                 repeat++;
 
             // The on-wire repeat field is a single byte (max 255). A run longer than that — common on
