@@ -179,6 +179,9 @@ public sealed class NiimbotClient : IAsyncDisposable
         {
             PrintheadPixels = profile.PrintheadPixels,
             UseIndexedRows = options.UseIndexedRows,
+            // Experimental M3-only diagnostic: preserve all other packet settings,
+            // but send each raster row separately to isolate repeat handling.
+            UseRepeatedRows = !profile.ModelIds.Contains(6400),
         });
 
         // Print init.
