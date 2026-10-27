@@ -1339,16 +1339,17 @@ public sealed partial class EditorViewModel : ObservableObject
 
     // ── Center on the label (Form Alignment) ─────────────────────────────────────────────────────
     // Centre the selection's (rendered) bounding box on the label, moving every selected element by the
-    // same delta so their relative layout is kept. Whole-mm math; when the gap doesn't divide evenly the
-    // box biases left (H) / top (V) — Floor leaves the spare mm on the right/bottom.
+    // same delta so their relative layout is kept. Preserve fractional millimetres: rounding down
+    // introduces a visible left/top bias on small labels.
 
     public void CenterOnLabelH()
     {
         if (_selectedIds.Count == 0) return;
+        RefreshAlignmentBounds();
         var sel = _selectedIds.Select(id => _live.Elements.First(e => e.Id == id)).ToList();
         var left = sel.Min(e => Bounds(e).XMm);
         var bboxW = sel.Max(e => Bounds(e).XMm + Bounds(e).WMm) - left;
-        var dx = Math.Floor((_live.Canvas.WidthMm - bboxW) / 2.0) - left;
+        var dx = FormAlignment.CenterOffset(_live.Canvas.WidthMm, left, bboxW);
         var ids = new HashSet<string>(_selectedIds);
         CommitTransform(e => ids.Contains(e.Id) ? e with { X = e.X + dx } : e);
     }
@@ -1356,17 +1357,35 @@ public sealed partial class EditorViewModel : ObservableObject
     public void CenterOnLabelV()
     {
         if (_selectedIds.Count == 0) return;
+        RefreshAlignmentBounds();
         var sel = _selectedIds.Select(id => _live.Elements.First(e => e.Id == id)).ToList();
         var top = sel.Min(e => Bounds(e).YMm);
         var bboxH = sel.Max(e => Bounds(e).YMm + Bounds(e).HMm) - top;
-        var dy = Math.Floor((_live.Canvas.HeightMm - bboxH) / 2.0) - top;
+        var dy = FormAlignment.CenterOffset(_live.Canvas.HeightMm, top, bboxH);
         var ids = new HashSet<string>(_selectedIds);
         CommitTransform(e => ids.Contains(e.Id) ? e with { Y = e.Y + dy } : e);
+    }
+
+    // Inspector edits render on a debounce. Measure the current document before alignment so a
+    // rapid edit followed by a click never uses the previous text/size/position bounds.
+    private void RefreshAlignmentBounds()
+    {
+        FlushGesture();
+        var resolved = _renderer.Resolve(_live, new ResolveContext
+        {
+            Now = DateTimeOffset.Now,
+            Assets = _assets,
+            RowIndex = _previewRow is not null ? _previewRowIndex : 0,
+            Data = _previewRow?.ByName,
+            DataByOrdinal = _previewRow?.ByOrdinal,
+        });
+        _renderedBounds = _renderer.MeasureRenderedBounds(resolved);
     }
 
     private void AlignEdit(Func<IReadOnlyList<LabelElement>, Func<LabelElement, (double Dx, double Dy)>> build)
     {
         if (_selectedIds.Count < 2) return;
+        RefreshAlignmentBounds();
         var selected = _selectedIds.Select(id => _live.Elements.First(e => e.Id == id)).ToList();
         var delta = build(selected);
         var ids = new HashSet<string>(_selectedIds);
@@ -1381,6 +1400,7 @@ public sealed partial class EditorViewModel : ObservableObject
     private void DistributeEdit(bool horizontal)
     {
         if (_selectedIds.Count < 3) return;
+        RefreshAlignmentBounds();
         var sorted = _selectedIds.Select(id => _live.Elements.First(e => e.Id == id))
             .OrderBy(Center).ToList();
         double firstC = Center(sorted[0]), lastC = Center(sorted[^1]);
