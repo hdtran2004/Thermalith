@@ -28,14 +28,34 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
         // Track the last focused text field so Data Merge ▸ Columns can insert a token at its caret even
         // after opening the menu steals keyboard focus (#7).
         AddHandler(InputElement.GotFocusEvent, OnAnyGotFocus, RoutingStrategies.Bubble);
+        AddHandler(InputElement.PointerReleasedEvent, OnCopiesPointerReleased, RoutingStrategies.Tunnel, handledEventsToo: true);
     }
 
     private TextBox? _lastFocusedTextBox;
 
     private void OnAnyGotFocus(object? sender, GotFocusEventArgs e)
     {
-        if (e.Source is TextBox tb) _lastFocusedTextBox = tb;
+        if (e.Source is TextBox tb)
+        {
+            _lastFocusedTextBox = tb;
+            if (tb.FindAncestorOfType<NumericUpDown>() == CopiesInput)
+                SelectCopiesValue(tb);
+        }
     }
+
+    private void OnCopiesPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (e.InitialPressMouseButton != MouseButton.Left) return;
+        var textBox = (e.Source as Visual)?.FindAncestorOfType<TextBox>(includeSelf: true);
+        if (textBox?.FindAncestorOfType<NumericUpDown>() == CopiesInput)
+            SelectCopiesValue(textBox);
+    }
+
+    private static void SelectCopiesValue(TextBox textBox) =>
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (textBox.IsFocused) textBox.SelectAll();
+        }, DispatcherPriority.Input);
 
     private MainWindowViewModel? Vm => DataContext as MainWindowViewModel;
 
@@ -45,6 +65,7 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
 
         vm.FilePicker = this;
         vm.Dialogs = this;
+        vm.Printer.ConfirmLargeCopyCountAsync = ConfirmLargeCopyCountAsync;
         vm.DataMerge.FilePicker = this;
         vm.DataMerge.Dialogs = this;
         vm.CloseRequested += (_, _) => Close();
@@ -151,6 +172,18 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
         {
             // Never let a close-time error crash the shutdown.
         }
+    }
+
+    // Session-only: never written to settings; resets when the window/app is restarted.
+    private bool _skipLargeCopyConfirmation;
+
+    private async Task<bool> ConfirmLargeCopyCountAsync(int copies)
+    {
+        if (_skipLargeCopyConfirmation) return true;
+        var result = await new CopyCountDialog(copies).ShowDialog<CopyCountConfirmation?>(this);
+        if (result?.Confirmed != true) return false;
+        _skipLargeCopyConfirmation = result.SkipForSession;
+        return true;
     }
 
     public Task<bool> ConfirmDiscardAsync() => new ConfirmDialog().ShowDialog<bool>(this);
@@ -273,6 +306,26 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
                 if (ed.IsCellEditing) { ed.CancelCellEdit(); CanvasHost.Focus(); e.Handled = true; return; }
                 if (ed.InCellMode) { ed.ExitCellMode(); e.Handled = true; return; }
             }
+            // Only the canvas consumes nudge keys: text fields and table cells retain navigation.
+            if (!ed.InCellMode && !ed.IsPrimaryEditing && CanvasHost.IsFocused
+                && (e.KeyModifiers & ~KeyModifiers.Shift) == KeyModifiers.None)
+            {
+                var step = e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? 1.0 : 0.1;
+                var delta = e.Key switch
+                {
+                    Key.Left => (-step, 0.0),
+                    Key.Right => (step, 0.0),
+                    Key.Up => (0.0, -step),
+                    Key.Down => (0.0, step),
+                    _ => (0.0, 0.0),
+                };
+                if (ed.HasSelection && delta != (0.0, 0.0))
+                {
+                    ed.NudgeSelection(delta.Item1, delta.Item2);
+                    e.Handled = true;
+                    return;
+                }
+            }
             // Keyboard peer of type-to-edit: F2 opens the in-place primary editor; Esc closes it.
             if (!ed.InCellMode)
             {
@@ -290,6 +343,10 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
         var ed = vm.Editor;
         var p = e.GetPosition(host);
         _pressPoint = p;
+
+        // Selecting an object should reveal its inspector, even if it was already selected.
+        // Empty canvas clicks keep the user's current tab.
+        if (ed.HitTest(p.X, p.Y) is not null) ShowPropertiesTab();
 
         // In cell-edit mode, pointer events select cells (drag = block). Clicking outside the table exits
         // cell mode and falls through to normal element handling.
@@ -579,7 +636,18 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
     {
         var items = new List<MenuItem>();
         foreach (var path in vm.RecentFiles)
-            items.Add(new MenuItem { Header = path, Command = vm.OpenRecentCommand, CommandParameter = path });
+        {
+            var fullPath = Path.GetFullPath(path);
+            // Show a concise filename; preserve literal underscores and expose the full path on hover.
+            var item = new MenuItem
+            {
+                Header = new TextBlock { Text = Path.GetFileName(fullPath) },
+                Command = vm.OpenRecentCommand,
+                CommandParameter = path,
+            };
+            ToolTip.SetTip(item, fullPath);
+            items.Add(item);
+        }
         MiRecent.ItemsSource = items;
 
         // The native mirror can't share these — NativeMenuItem is a different type (GitHub #9).
@@ -587,7 +655,7 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
         native.Menu ??= new NativeMenu();
         native.Menu.Items.Clear();
         foreach (var path in vm.RecentFiles)
-            native.Menu.Items.Add(new NativeMenuItem(path) { Command = vm.OpenRecentCommand, CommandParameter = path });
+            native.Menu.Items.Add(new NativeMenuItem(Path.GetFileName(path)) { Command = vm.OpenRecentCommand, CommandParameter = path });
     }
 
     // ── IFilePicker (platform dialogs) ───────────────────────────────────────────────────────
@@ -621,8 +689,18 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
     // body — so the resulting selection change shouldn't steal focus to the Name field.
     private bool _suppressRenameFocus;
 
-    private void OnElementsListPointerPressed(object? sender, PointerPressedEventArgs e) =>
+    private void ShowPropertiesTab()
+    {
+        if (this.FindControl<TabControl>("InspectorTabs") is { } tabs)
+            tabs.SelectedIndex = 0;
+    }
+
+    private void OnElementsListPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
         _suppressRenameFocus = (e.Source as Visual)?.FindAncestorOfType<ToggleButton>(includeSelf: true) is not null;
+        if (!_suppressRenameFocus && (e.Source as Visual)?.FindAncestorOfType<ListBoxItem>(includeSelf: true) is not null)
+            ShowPropertiesTab();
+    }
 
     // Clicking an element in the Elements list focuses its Name field so you can rename immediately.
     // Guard on IsPointerOver: canvas selection also updates the bound SelectedItem (firing this event),

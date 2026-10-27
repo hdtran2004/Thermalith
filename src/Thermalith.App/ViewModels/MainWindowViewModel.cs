@@ -606,5 +606,5 @@ public partial class MainWindowViewModel : ViewModelBase
     public bool InspectorShowsCells => Editor.InCellMode;
 
     private void UpdateTitle() =>
-        Title = $"Thermalith — {Editor.DocumentName}{(Editor.Dirty ? " *" : "")}";
+        Title = $"{(Editor.FilePath is { Length: > 0 } path ? Path.GetFileName(path) : Editor.DocumentName)}{(Editor.Dirty ? " *" : "")} — Thermalith";
 }

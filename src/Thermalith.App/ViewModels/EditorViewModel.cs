@@ -95,7 +95,7 @@ public sealed partial class EditorViewModel : ObservableObject
     [ObservableProperty] private bool _showGrid;
     [ObservableProperty] private bool _snapEnabled;
     [ObservableProperty] private bool _showSafeArea = true;
-    [ObservableProperty] private bool _smoothPreview;
+    [ObservableProperty] private bool _smoothPreview = true;
 
     // Re-render when the preview mode flips (exact 1-bit ↔ smooth grayscale, §6.3.6).
     partial void OnSmoothPreviewChanged(bool value) => RequestRender();
@@ -919,6 +919,10 @@ public sealed partial class EditorViewModel : ObservableObject
     /// when the label is wider than the printhead (a printable margin/crop exists).</summary>
     public bool ApplyRoll(double widthMm, double heightMm, string? shape, int? dpi, double? printheadWidthMm = null)
     {
+        // Printer/roll detection is setup, not an edit to an untouched new blank label.
+        // Once the user changes anything (even canvas settings or deleting all elements),
+        // Dirty remains true and the normal unsaved-work prompt still applies.
+        var keepClean = !Dirty && FilePath is null && !HasElements;
         FlushGesture();
         // The roll gives the physical label size; map it through the CURRENT orientation so a printer
         // connect / re-detect doesn't snap a rotated canvas back to un-rotated (the orientation is the
@@ -941,7 +945,7 @@ public sealed partial class EditorViewModel : ObservableObject
         _history.Commit(_live);
         _canvasEditor = new CanvasEditorViewModel(_live, OnCanvasEdited);
         if (SelectedEditor is null) OnPropertyChanged(nameof(InspectorTarget));
-        MarkDirty();
+        if (!keepClean) MarkDirty();
         RenderNow();
         RaiseState();
         return printheadWidthMm is > 0 && physW > printheadWidthMm.Value;
@@ -954,6 +958,10 @@ public sealed partial class EditorViewModel : ObservableObject
     /// printable guide + print crop) and DPI, preserving the user's label dimensions/shape.</summary>
     public void SetPrinterTarget(double? printheadWidthMm, int? dpi)
     {
+        // Printer/roll detection is setup, not an edit to an untouched new blank label.
+        // Once the user changes anything (even canvas settings or deleting all elements),
+        // Dirty remains true and the normal unsaved-work prompt still applies.
+        var keepClean = !Dirty && FilePath is null && !HasElements;
         FlushGesture();
         _live = _live with
         {
@@ -966,7 +974,7 @@ public sealed partial class EditorViewModel : ObservableObject
         _history.Commit(_live);
         _canvasEditor = new CanvasEditorViewModel(_live, OnCanvasEdited);
         if (SelectedEditor is null) OnPropertyChanged(nameof(InspectorTarget));
-        MarkDirty();
+        if (!keepClean) MarkDirty();
         RenderNow();
         RaiseState();
     }
@@ -1325,6 +1333,15 @@ public sealed partial class EditorViewModel : ObservableObject
         var right = Math.Max(a.XMm + a.WMm, b.XMm + b.WMm);
         var bottom = Math.Max(a.YMm + a.HMm, b.YMm + b.HMm);
         return new RenderedRect(x, y, right - x, bottom - y);
+    }
+
+    /// <summary>Fine keyboard movement in mm; deliberately bypasses grid snapping.</summary>
+    public void NudgeSelection(double dxMm, double dyMm)
+    {
+        var ids = _live.Elements.Where(e => _selectedIds.Contains(e.Id) && !e.Locked)
+            .Select(e => e.Id).ToHashSet();
+        if (ids.Count == 0 || (dxMm == 0 && dyMm == 0)) return;
+        CommitTransform(e => ids.Contains(e.Id) ? e with { X = e.X + dxMm, Y = e.Y + dyMm } : e);
     }
 
     public void AlignLeft() => AlignEdit(s => { var v = s.Min(e => Bounds(e).XMm); return e => (v - Bounds(e).XMm, 0.0); });

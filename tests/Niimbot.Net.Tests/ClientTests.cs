@@ -18,6 +18,29 @@ public class ClientTests
     }
 
     [Fact]
+    public async Task Cancelled_stream_can_end_job_and_print_again_without_reconnecting()
+    {
+        var (client, transport, printer) = NewB1();
+        await using var owned = client;
+        await client.ConnectAsync();
+        using var cancellation = new CancellationTokenSource();
+        transport.Responder = packet =>
+        {
+            if (packet.Command == (byte)RequestCommandId.PrintBitmapRow)
+                cancellation.Cancel();
+            return printer.Respond(packet);
+        };
+        var bitmap = new MonochromeBitmap(8, 2, [0xFF, 0x00]);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.PrintAsync(bitmap, ct: cancellation.Token));
+        transport.Responder = printer.Respond;
+        await client.EndPrintJobAsync();
+        Assert.Equal((byte)RequestCommandId.PrintEnd, transport.WrittenPackets[^1].Command);
+        Assert.True(client.IsConnected);
+        await client.PrintAsync(bitmap);
+        Assert.Equal((byte)RequestCommandId.PrintEnd, transport.WrittenPackets[^1].Command);
+    }
+
+    [Fact]
     public async Task ConnectAsync_identifies_the_B1_and_reads_capabilities()
     {
         var (client, _, _) = NewB1();

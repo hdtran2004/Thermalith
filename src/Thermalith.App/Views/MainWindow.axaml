@@ -361,7 +361,7 @@
                     <Ellipse Width="9" Height="9" VerticalAlignment="Center"
                              Fill="{Binding Printer.IsConnected, Converter={StaticResource ConnDot}}" />
                     <TextBlock Text="{Binding Printer.LoadedRollText}" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center" />
-                    <Button x:Name="PrintButton" Content="Print" Command="{Binding Printer.PrintCommand}" Classes="accent" />
+                    <Button x:Name="PrintButton" Content="{Binding Printer.PrintButtonText}" Command="{Binding Printer.PrintButtonCommand}" Classes="accent" />
                     <!-- EvilGeniusLabs mark — far-right, matched to the Print button height; opens About (donate link). -->
                     <Button Command="{Binding AboutCommand}" Padding="0" Background="Transparent" BorderThickness="0"
                             Cursor="Hand" VerticalAlignment="Center" ToolTip.Tip="About Thermalith">
@@ -676,7 +676,7 @@
             <GridSplitter Grid.Column="3" Width="4" Background="{DynamicResource SurfaceSplitter}" />
 
             <!-- RIGHT: inspector + printer tabs -->
-            <TabControl Grid.Column="4" Background="{DynamicResource SurfacePanel}">
+            <TabControl x:Name="InspectorTabs" Grid.Column="4" Background="{DynamicResource SurfacePanel}">
                 <TabItem Header="Properties">
                     <ScrollViewer Padding="8" HorizontalScrollBarVisibility="Disabled"
                                   VerticalScrollBarVisibility="Auto" ScrollViewer.AllowAutoHide="False">
@@ -773,6 +773,7 @@
                                               ToolTip.Tip="The box hugs the text (no resize handles). Turn off for a fixed box with word-wrap." />
                                     <Grid Classes="frow" ColumnDefinitions="90,*" IsEnabled="{Binding !AutoSize}" ToolTip.Tip="How text wraps in a fixed box: word, character, or none (single line, may clip). Disabled when Auto-size is on."><TextBlock Text="Wrap" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.Wrap}" SelectedItem="{Binding Wrap}" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Line-height multiplier for multi-line text. 1.0 = single spacing, 2.0 = double."><TextBlock Text="Line spacing" /><NumericUpDown Grid.Column="1" Value="{Binding LineSpacing, Converter={StaticResource Nz}}" Minimum="0" Increment="0.1" FormatString="0.0#" /></Grid>
+                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Extra space between characters in points. Negative values condense text without changing font size; zero is normal."><TextBlock Text="Char spacing" /><NumericUpDown Grid.Column="1" Value="{Binding LetterSpacing, Converter={StaticResource Nz}}" Minimum="-10" Maximum="50" Increment="0.1" FormatString="0.0#" /></Grid>
                                 </StackPanel>
                             </DataTemplate>
 
@@ -967,7 +968,7 @@
                             </Grid>
                             <Grid ColumnDefinitions="90,*" Margin="0,2">
                                 <TextBlock Text="Copies" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" />
-                                <NumericUpDown Grid.Column="1" Value="{Binding Copies, Converter={StaticResource Nz}}" Minimum="1" FormatString="0" />
+                                <NumericUpDown x:Name="CopiesInput" Grid.Column="1" Value="{Binding Copies, Converter={StaticResource Nz}}" Minimum="1" FormatString="0" />
                             </Grid>
                             <Grid ColumnDefinitions="90,*" Margin="0,2">
                                 <TextBlock Text="Offset X px" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" />
@@ -977,7 +978,7 @@
                                 <TextBlock Text="Offset Y px" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" />
                                 <NumericUpDown Grid.Column="1" Value="{Binding OffsetY, Converter={StaticResource Nz}}" FormatString="0" />
                             </Grid>
-                            <Button Content="Print" Command="{Binding PrintCommand}" HorizontalAlignment="Stretch" Margin="0,6" />
+                            <Button Content="{Binding PrintButtonText}" Command="{Binding PrintButtonCommand}" HorizontalAlignment="Stretch" Margin="0,6" />
 
                             <TextBlock Text="{Binding Message, UpdateSourceTrigger=PropertyChanged}" Foreground="{DynamicResource TextInfo}" TextWrapping="Wrap" />
                         </StackPanel>

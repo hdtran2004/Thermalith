@@ -227,6 +227,10 @@ public sealed class NiimbotClient : IAsyncDisposable
         await SendAsync(PacketGenerator.PrintEnd(), TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
     }
 
+    /// <summary>End an interrupted print job using a fresh token, after its send loop has stopped.</summary>
+    public async Task EndPrintJobAsync(CancellationToken ct = default) =>
+        await SendAsync(PacketGenerator.PrintEnd(), TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+
     public async Task DisconnectAsync(CancellationToken ct = default)
     {
         if (_pumpCts is { } cts)

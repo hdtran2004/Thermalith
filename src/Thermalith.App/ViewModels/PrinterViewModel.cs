@@ -6,6 +6,7 @@ using Niimbot.Net.Capabilities;
 using Niimbot.Net.Commands;
 using Niimbot.Net.Transport;
 using Thermalith.App.Services;
+using Thermalith.Core.Serialization;
 
 namespace Thermalith.App.ViewModels;
 
@@ -22,6 +23,8 @@ public sealed partial class PrinterViewModel : ObservableObject
     private readonly EditorViewModel _editor;
     private NiimbotClient? _client;
     private PrinterCapabilities? _caps;
+    private readonly PrinterOffsetStore _offsetStore = new(Path.Combine(PlatformDirectories.AppData(), "printer-offsets.json"));
+    private bool _restoringOffsets;
 
     public PrinterViewModel(EditorViewModel editor) => _editor = editor;
 
@@ -132,6 +135,33 @@ public sealed partial class PrinterViewModel : ObservableObject
     [ObservableProperty] private int _offsetX;
     [ObservableProperty] private int _offsetY;
 
+    partial void OnOffsetXChanged(int value) => SaveOffsets();
+    partial void OnOffsetYChanged(int value) => SaveOffsets();
+
+    private void RestoreOffsets()
+    {
+        _restoringOffsets = true;
+        try
+        {
+            var offsets = _offsetStore.Load(_caps?.SerialNumber);
+            OffsetX = offsets.X;
+            OffsetY = offsets.Y;
+        }
+        catch
+        {
+            // A missing/unreadable calibration must never leak the previous printer's offsets.
+            OffsetX = OffsetY = 0;
+        }
+        finally { _restoringOffsets = false; }
+    }
+
+    private void SaveOffsets()
+    {
+        if (_restoringOffsets || !IsConnected || string.IsNullOrWhiteSpace(_caps?.SerialNumber)) return;
+        try { _offsetStore.Save(_caps.SerialNumber, new PrinterOffsets(OffsetX, OffsetY)); }
+        catch (Exception ex) { Message = "Could not save printer offsets: " + ex.Message; }
+    }
+
     // ── Discovery ────────────────────────────────────────────────────────────────────────────
 
     // Greys while any operation is in flight (the busy cursor + spinner give the visible feedback).
@@ -184,6 +214,7 @@ public sealed partial class PrinterViewModel : ObservableObject
             _client = NiimbotClient.FromSerialPort(SelectedPort.Port);
             _caps = await _client.ConnectAsync();
             IsConnected = true;
+            RestoreOffsets();
 
             DensityMin = _caps.DensityMin;
             DensityMax = _caps.DensityMax;
@@ -350,16 +381,70 @@ public sealed partial class PrinterViewModel : ObservableObject
         }
     }
 
+    public Func<int, Task<bool>>? ConfirmLargeCopyCountAsync { get; set; }
+
+    private async Task<bool> ConfirmCopiesAsync(int copies)
+    {
+        if (copies <= 20) return true;
+        if (ConfirmLargeCopyCountAsync is not null)
+            return await ConfirmLargeCopyCountAsync(copies);
+        Message = "Printing more than 20 copies requires confirmation.";
+        return false;
+    }
+
+    private CancellationTokenSource? _printCancellation;
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(CancelPrintCommand))]
+    [NotifyPropertyChangedFor(nameof(PrintButtonText))]
+    [NotifyPropertyChangedFor(nameof(PrintButtonCommand))]
+    private bool _isPrinting;
+
+    public string PrintButtonText => IsPrinting ? "Cancel Print" : "Print";
+    public System.Windows.Input.ICommand PrintButtonCommand => IsPrinting ? CancelPrintCommand : PrintCommand;
+
+    private bool CanCancelPrint() => IsPrinting && _printCancellation is { IsCancellationRequested: false };
+
+    [RelayCommand(CanExecute = nameof(CanCancelPrint))]
+    private void CancelPrint()
+    {
+        _printCancellation?.Cancel();
+        CancelPrintCommand.NotifyCanExecuteChanged();
+        Message = "Cancelling print…";
+    }
+
+    private async Task EndCancelledPrintAsync()
+    {
+        try
+        {
+            if (_client is not null) await _client.EndPrintJobAsync();
+            Message = "Print cancelled. A label already buffered by the printer may still finish.";
+        }
+        catch (Exception ex) { Message = "Sending stopped; could not confirm printer job end: " + ex.Message; }
+    }
+
+    private void FinishPrint()
+    {
+        IsPrinting = false;
+        _printCancellation?.Dispose();
+        _printCancellation = null;
+        IsBusy = false;
+    }
+
     // ── Print ────────────────────────────────────────────────────────────────────────────────
 
     [RelayCommand(CanExecute = nameof(CanOperate))]
     private async Task PrintAsync()
     {
-        if (_client is null || !IsConnected) return;
+        if (_client is null || !IsConnected || IsBusy) return;
         IsBusy = true;
+        _printCancellation = new CancellationTokenSource();
+        IsPrinting = true;
         Message = "Rendering…";
         try
         {
+            var requestedCopies = Math.Max(1, Copies);
+            if (!await ConfirmCopiesAsync(requestedCopies)) { Message = "Print cancelled."; return; }
+            _printCancellation.Token.ThrowIfCancellationRequested();
             var mono = _editor.RenderForPrint();
             var rawW = mono.WidthPx;
             var rawH = mono.HeightPx;
@@ -377,27 +462,31 @@ public sealed partial class PrinterViewModel : ObservableObject
             var options = new PrintOptions
             {
                 Density = Density,
-                Copies = Math.Max(1, Copies),
+                Copies = requestedCopies,
                 LabelType = SelectedLabelType ?? LabelType.WithGaps,
                 HorizontalAlign = PrintAlignment.Center,
                 OffsetXPx = OffsetX,
                 OffsetYPx = OffsetY,
             };
             var progress = new Progress<PrintProgress>(p =>
-                Message = $"Printing {p.Page}/{p.TotalPages} — {p.PagePrintPercent}%");
+            {
+                if (IsPrinting && _printCancellation is { IsCancellationRequested: false })
+                    Message = $"Printing {p.Page}/{p.TotalPages} — {p.PagePrintPercent}%";
+            });
 
-            await _client.PrintAsync(mono, options, progress);
+            await _client.PrintAsync(mono, options, progress, _printCancellation.Token);
             Message = "Printed.";
             await RefreshStatusCoreAsync();
+        }
+        catch (OperationCanceledException) when (_printCancellation?.IsCancellationRequested == true)
+        {
+            await EndCancelledPrintAsync();
         }
         catch (Exception ex)
         {
             Message = "Print failed: " + ex.Message;
         }
-        finally
-        {
-            IsBusy = false;
-        }
+        finally { FinishPrint(); }
     }
 
     /// <summary>
@@ -413,15 +502,18 @@ public sealed partial class PrinterViewModel : ObservableObject
         IProgress<int>? progress,
         Func<bool> cancelled)
     {
-        if (_client is null || !IsConnected) return 0;
+        if (_client is null || !IsConnected || IsBusy) return 0;
         IsBusy = true;
+        _printCancellation = new CancellationTokenSource();
+        IsPrinting = true;
         var printed = 0;
         try
         {
             var copies = Math.Max(1, Copies);
+            if (rowCount > 0 && !await ConfirmCopiesAsync(copies)) { Message = "Print cancelled."; return 0; }
             for (var i = 0; i < rowCount; i++)
             {
-                if (cancelled()) break; // stop before the next row; the previous one already finished
+                if (cancelled() || _printCancellation.IsCancellationRequested) break; // stop before the next row
                 var mono = renderRow(i);
                 if (_caps is { } caps && mono.WidthPx > caps.PrintheadPixels)
                     mono = CropCentered(mono, caps.PrintheadPixels);
@@ -434,15 +526,19 @@ public sealed partial class PrinterViewModel : ObservableObject
                     OffsetXPx = OffsetX,
                     OffsetYPx = OffsetY,
                 };
-                await _client.PrintAsync(mono, options); // no ct: let the current label finish feeding
+                await _client.PrintAsync(mono, options, ct: _printCancellation.Token);
                 printed++;
                 progress?.Report(printed);
             }
         }
+        catch (OperationCanceledException) when (_printCancellation?.IsCancellationRequested == true)
+        {
+            await EndCancelledPrintAsync();
+        }
         finally
         {
             try { await RefreshStatusCoreAsync(); } catch { /* best-effort roll refresh */ }
-            IsBusy = false;
+            FinishPrint();
         }
         return printed;
     }
