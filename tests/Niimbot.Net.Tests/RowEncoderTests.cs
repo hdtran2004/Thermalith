@@ -8,6 +8,27 @@ namespace Niimbot.Net.Tests;
 public class RowEncoderTests
 {
     [Fact]
+    public void Uncompressed_rows_preserve_positions_and_pixels_across_blank_and_dense_runs()
+    {
+        var bitmap = new MonochromeBitmap(8, 6, [0, 0, 0xFF, 0xFF, 0xFF, 0]);
+        var packets = RowEncoder.Encode(bitmap, new RowEncoder.Options
+        {
+            PrintheadPixels = 851,
+            UseRepeatedRows = false,
+        });
+        Assert.Equal(6, packets.Count);
+        for (var y = 0; y < 6; y++)
+        {
+            var packet = packets[y];
+            Assert.Equal(y, packet.Data[0] * 256 + packet.Data[1]);
+            var blank = y < 2 || y == 5;
+            Assert.Equal((byte)(blank ? RequestCommandId.PrintEmptyRow : RequestCommandId.PrintBitmapRow), packet.Command);
+            Assert.Equal(1, packet.Data[blank ? 2 : 5]);
+            if (!blank) Assert.Equal(0xFF, packet.Data[6]);
+        }
+    }
+
+    [Fact]
     public void IndexPixels_lists_msb_first_indices()
     {
         // 0x81 = 1000_0001 → leftmost (index 0) and rightmost (index 7) bits set.
