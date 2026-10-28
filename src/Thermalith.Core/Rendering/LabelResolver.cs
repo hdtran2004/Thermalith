@@ -83,6 +83,18 @@ public static class LabelResolver
                 EcLevel = q.Props.EcLevel,
                 ModuleSizeMm = q.Props.ModuleSizeMm,
                 QuietZoneMm = q.Props.QuietZoneMm,
+                ShowText = q.Props.ShowText,
+                TextPosition = q.Props.TextPosition,
+                TextFontFamily = q.Props.TextFontFamily,
+                TextSizePt = q.Props.TextSizePt,
+                TextBold = q.Props.TextBold,
+                TextItalic = q.Props.TextItalic,
+                TextAlignment = q.Props.TextAlignment,
+                TextWrap = q.Props.TextWrap,
+                TextLetterSpacing = q.Props.TextLetterSpacing,
+                TextHeightMm = q.Props.TextHeightMm,
+                TextGapMm = q.Props.TextGapMm,
+
             }, el, justify),
 
             SerialElement s => Geo(new ResolvedText

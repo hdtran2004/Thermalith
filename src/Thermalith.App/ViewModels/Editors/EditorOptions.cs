@@ -31,6 +31,60 @@ public static class EditorOptions
         }
     }
 
+    public static string[] CellFonts => new[] { "(table default)", "Roboto" }
+        .Concat(Fonts.Where(f => f != BundledFont && f != "Roboto")).ToArray();
+    public static string[] QrCaptionFonts => new[] { "Roboto" }
+        .Concat(Fonts.Where(f => f != BundledFont && f != "Roboto")).ToArray();
+    public static Avalonia.Controls.ComboBoxItem[] FontItems => FontMenu(Fonts);
+    public static Avalonia.Controls.ComboBoxItem[] CellFontItems => FontMenu(CellFonts);
+    public static Avalonia.Controls.ComboBoxItem[] QrCaptionFontItems => FontMenu(QrCaptionFonts);
+
+    private static List<string>? _recentFonts;
+    private static string RecentFontPath => Path.Combine(Thermalith.App.Services.PlatformDirectories.AppData(), "recent-fonts.json");
+    private static List<string> RecentFonts
+    {
+        get
+        {
+            if (_recentFonts is not null) return _recentFonts;
+            try
+            {
+                _recentFonts = (System.Text.Json.JsonSerializer.Deserialize<List<string>>(File.ReadAllText(RecentFontPath)) ?? [])
+                    .Where(f => !string.IsNullOrWhiteSpace(f) && !f.StartsWith("("))
+                    .Distinct(StringComparer.OrdinalIgnoreCase).Take(5).ToList();
+            }
+            catch { _recentFonts = []; }
+            return _recentFonts;
+        }
+    }
+
+    public static void RememberFont(string font)
+    {
+        if (string.IsNullOrWhiteSpace(font) || font.StartsWith("(")) return;
+        var recent = RecentFonts;
+        recent.RemoveAll(f => string.Equals(f, font, StringComparison.OrdinalIgnoreCase));
+        recent.Insert(0, font);
+        if (recent.Count > 5) recent.RemoveRange(5, recent.Count - 5);
+        try { File.WriteAllText(RecentFontPath, System.Text.Json.JsonSerializer.Serialize(recent)); }
+        catch { /* Read-only profiles must not prevent selecting a font. */ }
+    }
+
+    private static Avalonia.Controls.ComboBoxItem[] FontMenu(IEnumerable<string> fonts)
+    {
+        var all = fonts.ToList();
+        var recent = RecentFonts.Where(f => all.Contains(f, StringComparer.OrdinalIgnoreCase)).ToList();
+        var items = new List<Avalonia.Controls.ComboBoxItem>();
+        if (recent.Count > 0)
+        {
+            items.Add(new() { Content = "Recent fonts", IsEnabled = false, FontWeight = Avalonia.Media.FontWeight.Bold });
+            items.AddRange(recent.Select(f => new Avalonia.Controls.ComboBoxItem { Content = f }));
+        }
+        items.Add(new() { Content = "All fonts", IsEnabled = false, FontWeight = Avalonia.Media.FontWeight.Bold });
+        items.AddRange(all.Select(f => new Avalonia.Controls.ComboBoxItem { Content = f }));
+        return items.ToArray();
+    }
+
+    public static string[] QrTextPositions { get; } = ["above", "below"];
+    public static string[] QrTextAlignments { get; } = ["left", "center", "right"];
     public static string[] JustifyH { get; } = ["left", "center", "right", "justify"];
     public static string[] JustifyV { get; } = ["top", "middle", "bottom"];
     public static string[] Wrap { get; } = ["none", "word"];

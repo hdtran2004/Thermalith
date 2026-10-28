@@ -44,6 +44,7 @@ public sealed record BarcodeProps
 /// <summary>§11.4 — QR code via ZXing.Net (QRCoder fallback).</summary>
 public sealed record QrProps
 {
+    public bool LockAspect { get; init; } = true;
     public string Value { get; init; } = "";
     public string Encoding { get; init; } = "text"; // text | hex
     public string EcLevel { get; init; } = "M";     // L | M | Q | H
@@ -53,6 +54,18 @@ public sealed record QrProps
     public double? ModuleSizeMm { get; init; }
 
     public double QuietZoneMm { get; init; } = 1.0;
+
+    public bool ShowText { get; init; } = false;
+    public string TextPosition { get; init; } = "below";
+    public string TextFontFamily { get; init; } = "Roboto";
+    public double TextSizePt { get; init; } = 8;
+    public bool TextBold { get; init; } = false;
+    public bool TextItalic { get; init; } = false;
+    public string TextAlignment { get; init; } = "center";
+    public string TextWrap { get; init; } = "none";
+    public double TextLetterSpacing { get; init; } = 0;
+    public double TextHeightMm { get; init; } = 4;
+    public double TextGapMm { get; init; } = 1;
 
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extensions { get; init; }
 }

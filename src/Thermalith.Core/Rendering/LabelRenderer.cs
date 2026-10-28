@@ -245,9 +245,12 @@ public sealed class LabelRenderer
         foreach (var el in label.Elements)
             // Un-rotated content bounds — the caller applies the element's rotation (as a rotated adorner,
             // or an axis-aligned bounds via RotatedAabb for alignment).
-            map[el.Id] = el is ResolvedText t
-                ? TextBoundsMm(t, pxPerMm)
-                : new RenderedRect(el.XMm, el.YMm, el.WMm, el.HMm);
+            map[el.Id] = el switch
+            {
+                ResolvedText t => TextBoundsMm(t, pxPerMm),
+                ResolvedQr q => QrBounds(q, pxPerMm),
+                _ => new RenderedRect(el.XMm, el.YMm, el.WMm, el.HMm),
+            };
         return map;
     }
 
@@ -656,7 +659,69 @@ public sealed class LabelRenderer
 
     // ── QR ──────────────────────────────────────────────────────────────────────────────────
 
-    private static void DrawQr(DrawContext ctx, ResolvedQr q)
+    private void DrawQr(DrawContext ctx, ResolvedQr q)
+    {
+        DrawQrCode(ctx, q); // Caption visibility never changes the QR geometry.
+        if (q.ShowText && QrCaption(q, ctx.PxPerMm) is { } caption)
+            DrawText(ctx, caption); // Deliberately not clipped to the QR element.
+    }
+
+    private ResolvedText? QrCaption(ResolvedQr q, double pxPerMm)
+    {
+        if (string.IsNullOrEmpty(q.Value)) return null;
+        RenderedRect code;
+        try { code = QrInkBounds(q, pxPerMm); }
+        catch { return null; }
+        var quiet = Math.Max(0, Math.Round(q.QuietZoneMm * pxPerMm)) / pxPerMm;
+        var caption = new ResolvedText
+        {
+            Id = q.Id, XMm = code.XMm, YMm = 0, WMm = code.WMm,
+            HMm = Math.Max(0.1, q.TextHeightMm), Text = q.Value, Wrap = q.TextWrap,
+            FontSizing = "fixed", Justify = new Justify { H = q.TextAlignment, V = "top" },
+            Style = new ResolvedTextStyle
+            {
+                FontFamily = q.TextFontFamily, FontSizePt = q.TextSizePt,
+                Bold = q.TextBold, Italic = q.TextItalic, LetterSpacing = q.TextLetterSpacing,
+            },
+        };
+        // Grow vertically for wrapped/multiline text. Horizontal overflow is allowed when Wrap=none.
+        var bounds = TextBoundsMm(caption, pxPerMm);
+        var height = Math.Max(caption.HMm, bounds.YMm + bounds.HMm);
+        var gap = quiet + Math.Max(0, q.TextGapMm);
+        return caption with
+        {
+            HMm = height,
+            YMm = q.TextPosition == "above" ? code.YMm - gap - height : code.YMm + code.HMm + gap,
+        };
+    }
+
+    private static RenderedRect QrInkBounds(ResolvedQr q, double pxPerMm)
+    {
+        var n = Barcodes.EncodeQr(q.Value, q.Encoding, q.EcLevel).GetLength(0);
+        var w = (float)(q.WMm * pxPerMm);
+        var h = (float)(q.HMm * pxPerMm);
+        var quiet = (int)Math.Round(q.QuietZoneMm * pxPerMm);
+        var module = q.ModuleSizeMm is { } ms
+            ? Math.Max(1, (int)Math.Round(ms * pxPerMm))
+            : Math.Max(1, ((int)Math.Floor(Math.Min(w, h)) - 2 * quiet) / n);
+        var total = n * module + 2 * quiet;
+        return new RenderedRect(q.XMm + ((w - total) / 2 + quiet) / pxPerMm,
+            q.YMm + ((h - total) / 2 + quiet) / pxPerMm, n * module / pxPerMm, n * module / pxPerMm);
+    }
+
+    private RenderedRect QrBounds(ResolvedQr q, double pxPerMm)
+    {
+        var box = new RenderedRect(q.XMm, q.YMm, q.WMm, q.HMm);
+        if (!q.ShowText || QrCaption(q, pxPerMm) is not { } caption) return box;
+        var text = TextBoundsMm(caption, pxPerMm);
+        var left = Math.Min(box.XMm, text.XMm);
+        var top = Math.Min(box.YMm, text.YMm);
+        return new RenderedRect(left, top,
+            Math.Max(box.XMm + box.WMm, text.XMm + text.WMm) - left,
+            Math.Max(box.YMm + box.HMm, text.YMm + text.HMm) - top);
+    }
+
+    private static void DrawQrCode(DrawContext ctx, ResolvedQr q)
     {
         if (string.IsNullOrEmpty(q.Value)) return;
         bool[,] modules;

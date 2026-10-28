@@ -101,26 +101,66 @@ public sealed partial class QrEditorViewModel : ElementEditorViewModel
 {
     public override string TypeLabel => "QR Code";
 
+    [ObservableProperty] private bool _lockAspect = true;
     [ObservableProperty] private string _value;
     [ObservableProperty] private string _encoding;
     [ObservableProperty] private string _ecLevel;
     [ObservableProperty] private double? _moduleSizeMm;
     [ObservableProperty] private double _quietZoneMm;
 
+    [ObservableProperty] private bool _showText;
+    [ObservableProperty] private string _textPosition;
+    [ObservableProperty] private string _textFontFamily;
+    [ObservableProperty] private double _textSizePt;
+    [ObservableProperty] private bool _textBold;
+    [ObservableProperty] private bool _textItalic;
+    [ObservableProperty] private string _textAlignment;
+    [ObservableProperty] private string _textWrap;
+    [ObservableProperty] private double _textLetterSpacing;
+    [ObservableProperty] private double _textHeightMm;
+    [ObservableProperty] private double _textGapMm;
+
     public QrEditorViewModel(QrElement el, Action<string?> onChanged) : base(el, onChanged)
     {
+        _lockAspect = el.Props.LockAspect;
         _value = el.Props.Value;
         _encoding = el.Props.Encoding;
         _ecLevel = el.Props.EcLevel;
         _moduleSizeMm = el.Props.ModuleSizeMm;
         _quietZoneMm = el.Props.QuietZoneMm;
+        _showText = el.Props.ShowText;
+        _textPosition = el.Props.TextPosition;
+        _textFontFamily = el.Props.TextFontFamily;
+        _textSizePt = el.Props.TextSizePt;
+        _textBold = el.Props.TextBold;
+        _textItalic = el.Props.TextItalic;
+        _textAlignment = el.Props.TextAlignment;
+        _textWrap = el.Props.TextWrap;
+        _textLetterSpacing = el.Props.TextLetterSpacing;
+        _textHeightMm = el.Props.TextHeightMm;
+        _textGapMm = el.Props.TextGapMm;
         MarkLoaded();
+    }
+
+    public override void SyncFromElement(LabelElement el)
+    {
+        base.SyncFromElement(el);
+        if (el is QrElement qr) SetSilently(() => ModuleSizeMm = qr.Props.ModuleSizeMm);
+    }
+
+    [RelayCommand]
+    private void MakeSquare()
+    {
+        var side = Math.Min(W, H);
+        SetGeometrySilently(X, Y, side, side);
+        ModuleSizeMm = null;
+        RaiseEdited();
     }
 
     public override LabelElement ToElement() => new QrElement
     {
         Id = Id, Name = Name, X = X, Y = Y, W = W, H = H, Rotation = Rotation, Locked = Locked, Visible = Visible, Justify = JustifyValue(),
-        Props = new QrProps { Value = Value, Encoding = Encoding, EcLevel = EcLevel, ModuleSizeMm = ModuleSizeMm, QuietZoneMm = QuietZoneMm },
+        Props = new QrProps { LockAspect = LockAspect, Value = Value, Encoding = Encoding, EcLevel = EcLevel, ModuleSizeMm = ModuleSizeMm, QuietZoneMm = QuietZoneMm, ShowText = ShowText, TextPosition = TextPosition, TextFontFamily = TextFontFamily, TextSizePt = TextSizePt, TextBold = TextBold, TextItalic = TextItalic, TextAlignment = TextAlignment, TextWrap = TextWrap, TextLetterSpacing = TextLetterSpacing, TextHeightMm = TextHeightMm, TextGapMm = TextGapMm },
     };
 }
 

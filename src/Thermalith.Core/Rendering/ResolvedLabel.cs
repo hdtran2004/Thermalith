@@ -67,6 +67,18 @@ public sealed record ResolvedQr : ResolvedElement
     public string EcLevel { get; init; } = "M";
     public double? ModuleSizeMm { get; init; }
     public double QuietZoneMm { get; init; } = 1.0;
+    public bool ShowText { get; init; } = false;
+    public string TextPosition { get; init; } = "below";
+    public string TextFontFamily { get; init; } = "Roboto";
+    public double TextSizePt { get; init; } = 8;
+    public bool TextBold { get; init; } = false;
+    public bool TextItalic { get; init; } = false;
+    public string TextAlignment { get; init; } = "center";
+    public string TextWrap { get; init; } = "none";
+    public double TextLetterSpacing { get; init; } = 0;
+    public double TextHeightMm { get; init; } = 4;
+    public double TextGapMm { get; init; } = 1;
+
 }
 
 public sealed record ResolvedShape : ResolvedElement

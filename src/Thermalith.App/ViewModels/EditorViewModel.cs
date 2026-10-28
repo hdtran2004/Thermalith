@@ -376,11 +376,23 @@ public sealed partial class EditorViewModel : ObservableObject
             },
             (QrElement t, QrElement s) => prop switch
             {
+                "LockAspect" => t with { Props = t.Props with { LockAspect = s.Props.LockAspect } },
                 "Value" => t with { Props = t.Props with { Value = s.Props.Value } },
                 "Encoding" => t with { Props = t.Props with { Encoding = s.Props.Encoding } },
                 "EcLevel" => t with { Props = t.Props with { EcLevel = s.Props.EcLevel } },
                 "ModuleSizeMm" => t with { Props = t.Props with { ModuleSizeMm = s.Props.ModuleSizeMm } },
                 "QuietZoneMm" => t with { Props = t.Props with { QuietZoneMm = s.Props.QuietZoneMm } },
+                "ShowText" => t with { Props = t.Props with { ShowText = s.Props.ShowText } },
+                "TextPosition" => t with { Props = t.Props with { TextPosition = s.Props.TextPosition } },
+                "TextFontFamily" => t with { Props = t.Props with { TextFontFamily = s.Props.TextFontFamily } },
+                "TextSizePt" => t with { Props = t.Props with { TextSizePt = s.Props.TextSizePt } },
+                "TextBold" => t with { Props = t.Props with { TextBold = s.Props.TextBold } },
+                "TextItalic" => t with { Props = t.Props with { TextItalic = s.Props.TextItalic } },
+                "TextAlignment" => t with { Props = t.Props with { TextAlignment = s.Props.TextAlignment } },
+                "TextWrap" => t with { Props = t.Props with { TextWrap = s.Props.TextWrap } },
+                "TextLetterSpacing" => t with { Props = t.Props with { TextLetterSpacing = s.Props.TextLetterSpacing } },
+                "TextHeightMm" => t with { Props = t.Props with { TextHeightMm = s.Props.TextHeightMm } },
+                "TextGapMm" => t with { Props = t.Props with { TextGapMm = s.Props.TextGapMm } },
                 _ => target,
             },
             (SerialElement t, SerialElement s) => prop switch
@@ -724,6 +736,15 @@ public sealed partial class EditorViewModel : ObservableObject
                 var (x, y, w, h) = ResizeGeom(_dragHandle, g, dmx, dmy);
                 (sx, sy, sw, sh) = SnapResize(_dragHandle, x, y, w, h);
             }
+            if (_live.Elements.FirstOrDefault(e => e.Id == id) is QrElement { Props.LockAspect: true })
+            {
+                int hx = _dragHandle is Handle.TopLeft or Handle.Left or Handle.BottomLeft ? -1
+                    : _dragHandle is Handle.TopRight or Handle.Right or Handle.BottomRight ? 1 : 0;
+                int hy = _dragHandle is Handle.TopLeft or Handle.Top or Handle.TopRight ? -1
+                    : _dragHandle is Handle.BottomLeft or Handle.Bottom or Handle.BottomRight ? 1 : 0;
+                var square = QrResize.Square(new RenderedRect(g.X, g.Y, g.W, g.H), sw, sh, hx, hy, rot);
+                (sx, sy, sw, sh) = (square.XMm, square.YMm, square.WMm, square.HMm);
+            }
             // Resizing an auto-size text box takes manual control of its size → switch Auto-size off so the
             // drag sticks (and the box becomes a fixed, word-wrapping area), GitHub #5.
             ReplaceIn(list, id, e =>
@@ -733,6 +754,8 @@ public sealed partial class EditorViewModel : ObservableObject
                     _autoSizeConverted = true; // rebuild the inspector at EndDrag so its checkbox updates
                     return te with { X = sx, Y = sy, W = sw, H = sh, Props = te.Props with { AutoSize = false } };
                 }
+                if (e is QrElement qr)
+                    return qr with { X = sx, Y = sy, W = sw, H = sh, Props = qr.Props with { ModuleSizeMm = null } };
                 return e with { X = sx, Y = sy, W = sw, H = sh };
             });
         }
@@ -917,7 +940,7 @@ public sealed partial class EditorViewModel : ObservableObject
     /// (the printer's max print width) is stored so the printable area = min(label, printhead) shows as a
     /// guide and the print crops to it. No clamping — designs keep the label's real size. Returns true
     /// when the label is wider than the printhead (a printable margin/crop exists).</summary>
-    public bool ApplyRoll(double widthMm, double heightMm, string? shape, int? dpi, double? printheadWidthMm = null)
+    public bool ApplyRoll(double widthMm, double heightMm, string? shape, int? dpi, double? printheadWidthMm = null, double? cornerRadiusMm = null)
     {
         // Printer/roll detection is setup, not an edit to an untouched new blank label.
         // Once the user changes anything (even canvas settings or deleting all elements),
@@ -937,6 +960,7 @@ public sealed partial class EditorViewModel : ObservableObject
                 WidthMm = rotated ? physH : physW,
                 HeightMm = rotated ? physW : physH,
                 Shape = string.IsNullOrEmpty(shape) ? _live.Canvas.Shape : shape,
+                CornerRadiusMm = cornerRadiusMm ?? (shape == "rounded" ? 2 : 0),
                 Dpi = dpi is > 0 ? dpi.Value : _live.Canvas.Dpi,
                 PrintheadWidthMm = printheadWidthMm ?? _live.Canvas.PrintheadWidthMm,
                 // OrientationDeg preserved.
@@ -956,7 +980,7 @@ public sealed partial class EditorViewModel : ObservableObject
 
     /// <summary>Target a printer without changing the canvas size: set the printhead width (for the
     /// printable guide + print crop) and DPI, preserving the user's label dimensions/shape.</summary>
-    public void SetPrinterTarget(double? printheadWidthMm, int? dpi)
+    public void SetPrinterTarget(double? printheadWidthMm, int? dpi, string? shape = null, double? cornerRadiusMm = null)
     {
         // Printer/roll detection is setup, not an edit to an untouched new blank label.
         // Once the user changes anything (even canvas settings or deleting all elements),
@@ -968,6 +992,8 @@ public sealed partial class EditorViewModel : ObservableObject
             Canvas = _live.Canvas with
             {
                 PrintheadWidthMm = printheadWidthMm ?? _live.Canvas.PrintheadWidthMm,
+                Shape = shape ?? _live.Canvas.Shape,
+                CornerRadiusMm = cornerRadiusMm ?? _live.Canvas.CornerRadiusMm,
                 Dpi = dpi is > 0 ? dpi.Value : _live.Canvas.Dpi,
             },
         };
@@ -1323,6 +1349,7 @@ public sealed partial class EditorViewModel : ObservableObject
         SerialElement or DateTimeElement => Content(e),
         TextElement { Props.AutoSize: true } => Content(e),
         TextElement => Union(Content(e), new RenderedRect(e.X, e.Y, e.W, e.H)),
+        QrElement => new RenderedRect(e.X, e.Y, e.W, e.H),
         _ => Content(e),
     };
 
@@ -1675,6 +1702,41 @@ public sealed partial class EditorViewModel : ObservableObject
 
     // ── In-place cell text editing ────────────────────────────────────────────────────────────────
 
+    [ObservableProperty] private InPlaceTypography _cellTypography = new();
+    [ObservableProperty] private InPlaceTypography _primaryTypography = new();
+
+    private InPlaceTypography EditingTypography(string family, double points, bool bold, bool italic, Justify justify) => new()
+    {
+        FontFamily = new Avalonia.Media.FontFamily(family),
+        FontSize = Math.Max(11, points * _live.Canvas.Dpi / 72.0 * Zoom),
+        FontWeight = bold ? Avalonia.Media.FontWeight.Bold : Avalonia.Media.FontWeight.Normal,
+        FontStyle = italic ? Avalonia.Media.FontStyle.Italic : Avalonia.Media.FontStyle.Normal,
+        TextAlignment = justify.H switch { "right" => Avalonia.Media.TextAlignment.Right, "center" => Avalonia.Media.TextAlignment.Center, _ => Avalonia.Media.TextAlignment.Left },
+        VerticalAlignment = justify.V switch { "bottom" => Avalonia.Layout.VerticalAlignment.Bottom, "middle" => Avalonia.Layout.VerticalAlignment.Center, _ => Avalonia.Layout.VerticalAlignment.Top },
+    };
+
+    private void RefreshEditingTypography()
+    {
+        var resolved = _renderer.Resolve(_live, new ResolveContext { Now = DateTimeOffset.Now, Assets = _assets });
+        if (InCellMode && CellTable is { } table && resolved.Elements.OfType<ResolvedTable>().FirstOrDefault(e => e.Id == table.Id) is { } rt)
+        {
+            var r = Math.Clamp(_cellFocusR, 0, rt.Rows - 1);
+            var c = Math.Clamp(_cellFocusC, 0, rt.Cols - 1);
+            var cell = rt.Cells[r][c];
+            CellTypography = EditingTypography(cell.FontFamily, cell.FontSizePt, cell.Bold, cell.Italic, cell.Justify);
+            CellEditorRect = ActiveCellDisplayRect(table, r, c);
+        }
+        if (PrimaryTarget() is { } primary)
+        {
+            var text = resolved.Elements.OfType<ResolvedText>().FirstOrDefault(e => e.Id == primary.Id);
+            PrimaryTypography = text is not null
+                ? EditingTypography(text.Style.FontFamily, text.Style.FontSizePt, text.Style.Bold, text.Style.Italic, text.Justify)
+                : EditingTypography("Arial", 9, false, false, new Justify());
+            var scale = DisplayPxPerMm;
+            PrimaryEditorRect = new Rect(primary.X * scale, primary.Y * scale, Math.Max(12, primary.W * scale), Math.Max(14, primary.H * scale));
+        }
+    }
+
     [ObservableProperty] private bool _isCellEditing;
     [ObservableProperty] private string _cellEditText = "";
     [ObservableProperty] private Rect _cellEditorRect;
@@ -1692,6 +1754,7 @@ public sealed partial class EditorViewModel : ObservableObject
         var cells = t.Props.Cells;
         CellEditText = initial ?? (cells is not null && r < cells.Count && c < cells[r].Count ? cells[r][c].Content : "");
         CellEditorRect = ActiveCellDisplayRect(t, r, c);
+        RefreshEditingTypography();
         IsCellEditing = true;
     }
 
@@ -1833,6 +1896,47 @@ public sealed partial class EditorViewModel : ObservableObject
         return cells is not null && r < cells.Count && c < cells[r].Count ? cells[r][c] : new TableCell();
     }
 
+    private TableCell? _copiedCellFormatting;
+    private string? _copiedFormattingTableId;
+    public bool CanPasteCellFormatting => CellTable is { } t && _copiedCellFormatting is not null && t.Id == _copiedFormattingTableId;
+    public string CellFontFamily
+    {
+        get => FocusCell().FontFamily ?? "(table default)";
+        set
+        {
+            var font = value == "(table default)" ? null : value;
+            if (FocusCell().FontFamily == font) return;
+            MutateSelectedCells(c => c with { FontFamily = font });
+        }
+    }
+    public double? CellFontSizePt
+    {
+        get => FocusCell().FontSizePt;
+        set
+        {
+            if (value is <= 0 || FocusCell().FontSizePt == value) return;
+            MutateSelectedCells(c => c with { FontSizePt = value });
+        }
+    }
+    public void CopyCellFormatting()
+    {
+        if (CellTable is not { } table) return;
+        if (IsCellEditing) CommitCellEdit();
+        _copiedCellFormatting = FocusCell();
+        _copiedFormattingTableId = table.Id;
+        RaiseCellState();
+    }
+    public void PasteCellFormatting(bool allCells)
+    {
+        if (!CanPasteCellFormatting || CellTable is not { } table || _copiedCellFormatting is not { } source) return;
+        if (!allCells) { MutateSelectedCells(c => TableCellFormatting.Apply(source, c)); return; }
+        var grid = Materialize(table.Props);
+        for (var r = 0; r < table.Props.Rows; r++)
+            for (var c = 0; c < table.Props.Cols; c++)
+                grid[r][c] = TableCellFormatting.Apply(source, grid[r][c]);
+        CommitTable(table, table.Props with { Cells = grid });
+    }
+
     public string CellFill { get => FocusCell().Fill.ToString(); set { if (int.TryParse(value, out var p)) SetCellFill(p); } }
     public string CellTextColor { get => FocusCell().TextColor; set => SetCellTextColor(value == "white"); }
     public bool CellBold { get => FocusCell().Bold ?? false; set => MutateSelectedCells(c => c with { Bold = value }); }
@@ -1844,6 +1948,9 @@ public sealed partial class EditorViewModel : ObservableObject
 
     private void RaiseCellState()
     {
+        OnPropertyChanged(nameof(CellFontFamily));
+        OnPropertyChanged(nameof(CellFontSizePt));
+        OnPropertyChanged(nameof(CanPasteCellFormatting));
         OnPropertyChanged(nameof(CellFill));
         OnPropertyChanged(nameof(CellTextColor));
         OnPropertyChanged(nameof(CellBold));
@@ -1973,6 +2080,7 @@ public sealed partial class EditorViewModel : ObservableObject
         PrimaryEditMultiline = el is TextElement;
         var s = _live.Canvas.Dpi / 25.4 * Zoom;
         PrimaryEditorRect = new Rect(el.X * s, el.Y * s, Math.Max(12, el.W * s), Math.Max(14, el.H * s));
+        RefreshEditingTypography();
         IsPrimaryEditing = true;
         return true;
     }
@@ -2038,10 +2146,20 @@ public sealed partial class EditorViewModel : ObservableObject
             int wpx, hpx;
             if (SmoothPreview)
             {
-                var gray = _renderer.RenderGray(resolved, opts);
+                // Smooth preview is screen-oriented: rerasterize text at the displayed resolution
+                // instead of magnifying printer pixels. Keep document/display geometry at printer DPI.
+                var baseWidth = Math.Max(1, (int)Math.Ceiling(_live.Canvas.WidthMm * _live.Canvas.Dpi / 25.4));
+                var baseHeight = Math.Max(1, (int)Math.Ceiling(_live.Canvas.HeightMm * _live.Canvas.Dpi / 25.4));
+                var pixelBudgetScale = Math.Sqrt(16_000_000.0 / ((double)baseWidth * baseHeight));
+                var scale = Math.Max(1, Math.Min(Math.Max(2, Zoom), Math.Min(4, pixelBudgetScale)));
+                var previewLabel = resolved with
+                {
+                    Canvas = resolved.Canvas with { Dpi = (int)Math.Round(resolved.Canvas.Dpi * scale) },
+                };
+                var gray = _renderer.RenderGray(previewLabel, opts);
                 Preview = PreviewImage.FromGray(gray);
-                wpx = gray.WidthPx;
-                hpx = gray.HeightPx;
+                wpx = baseWidth;
+                hpx = baseHeight;
             }
             else
             {
@@ -2083,8 +2201,10 @@ public sealed partial class EditorViewModel : ObservableObject
 
     partial void OnZoomChanged(double value)
     {
+        if (IsCellEditing || IsPrimaryEditing) RefreshEditingTypography();
         UpdateDisplaySize();
         UpdateSelectionVisuals();
+        if (SmoothPreview) RequestRender();
     }
 
     private void UpdateDisplaySize()
@@ -2097,11 +2217,29 @@ public sealed partial class EditorViewModel : ObservableObject
 
     partial void OnShowSafeAreaChanged(bool value) => UpdateSafeArea();
 
+    // Preview geometry follows the configured stock outline. Printing retains its normal raster path.
+    public Avalonia.Media.Geometry LabelOutlineGeometry => LabelOutline(0, 0);
+    public Avalonia.Media.Geometry PrintableOutlineGeometry => LabelOutline(PrintableInsetXMm, PrintableInsetYMm);
+
+    private Avalonia.Media.Geometry LabelOutline(double insetX, double insetY)
+    {
+        var scale = DisplayPxPerMm;
+        var x = Math.Min(Math.Max(0, insetX), _live.Canvas.WidthMm / 2) * scale;
+        var y = Math.Min(Math.Max(0, insetY), _live.Canvas.HeightMm / 2) * scale;
+        var rect = new Rect(x, y, Math.Max(0, DisplayWidth - 2 * x), Math.Max(0, DisplayHeight - 2 * y));
+        if (_live.Canvas.Shape == "circle") return new Avalonia.Media.EllipseGeometry(rect);
+        var radius = Math.Max(0, _live.Canvas.CornerRadiusMm - Math.Max(insetX, insetY)) * scale;
+        radius = Math.Min(radius, Math.Min(rect.Width, rect.Height) / 2);
+        return new Avalonia.Media.RectangleGeometry { Rect = rect, RadiusX = radius, RadiusY = radius };
+    }
+
     private void UpdateSafeArea()
     {
         // The guide draws when either axis has an inset — the user's soft safe margin and/or the
         // printhead floor (on whichever axis the physical-width limit falls).
         HasSafeArea = ShowSafeArea && (PrintableInsetXMm > 0 || PrintableInsetYMm > 0);
+        OnPropertyChanged(nameof(LabelOutlineGeometry));
+        OnPropertyChanged(nameof(PrintableOutlineGeometry));
     }
 
     // Positioning is decimal-mm (reverted from whole-mm 2026-06-10): snap to the grid when enabled,

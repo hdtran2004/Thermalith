@@ -40,6 +40,7 @@
             <TextBox Grid.Column="3" Text="{Binding Height, UpdateSourceTrigger=PropertyChanged, Converter={StaticResource Num}}" />
         </Grid>
         <Grid Classes="r" ColumnDefinitions="92,*"><TextBlock Text="Shape" /><ComboBox Grid.Column="1" HorizontalAlignment="Stretch" ItemsSource="{x:Static ed:EditorOptions.CanvasShape}" SelectedItem="{Binding Shape}" /></Grid>
+        <Grid Classes="r" ColumnDefinitions="92,*" ToolTip.Tip="Physical corner radius for rounded labels. Measure the roll; existing rounded rolls default to 2 mm."><TextBlock Text="Corner mm" /><NumericUpDown Grid.Column="1" Value="{Binding CornerRadiusMm}" Minimum="0" Increment="0.1" /></Grid>
         <Grid Classes="r" ColumnDefinitions="92,*"><TextBlock Text="Density" /><TextBox Grid.Column="1" Text="{Binding Density, Converter={StaticResource Num}}" Watermark="optional" /></Grid>
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,14,0,0">

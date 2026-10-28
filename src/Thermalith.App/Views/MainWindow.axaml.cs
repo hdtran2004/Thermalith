@@ -31,6 +31,41 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
         AddHandler(InputElement.PointerReleasedEvent, OnCopiesPointerReleased, RoutingStrategies.Tunnel, handledEventsToo: true);
     }
 
+    private bool _refreshingFontMenu;
+
+    private void OnFontDropDownOpened(object? sender, EventArgs e)
+    {
+        if (sender is not ComboBox combo) return;
+        var selected = combo.SelectedValue;
+        _refreshingFontMenu = true;
+        try
+        {
+            var items = (combo.Tag as string) switch
+            {
+                "cell" => Thermalith.App.ViewModels.Editors.EditorOptions.CellFontItems,
+                "qr" => Thermalith.App.ViewModels.Editors.EditorOptions.QrCaptionFontItems,
+                _ => Thermalith.App.ViewModels.Editors.EditorOptions.FontItems,
+            };
+            combo.SetCurrentValue(ItemsControl.ItemsSourceProperty, items);
+            combo.SetCurrentValue(ComboBox.SelectedValueProperty, selected);
+        }
+        finally { _refreshingFontMenu = false; }
+    }
+
+    private void OnFontSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_refreshingFontMenu || sender is not ComboBox combo || (!combo.IsDropDownOpen && !combo.IsFocused)
+            || e.AddedItems.Count == 0 || e.AddedItems[0] is not ComboBoxItem { IsEnabled: true, Content: string font }) return;
+        // Explicit user edits only: rebuilding the list must not write transient nulls to the model.
+        switch (combo.DataContext)
+        {
+            case Thermalith.App.ViewModels.Editors.TextEditorViewModel text: text.SelectedFont = font; break;
+            case Thermalith.App.ViewModels.Editors.QrEditorViewModel qr: qr.TextFontFamily = font; break;
+            case MainWindowViewModel vm: vm.Editor.CellFontFamily = font; break;
+        }
+        Thermalith.App.ViewModels.Editors.EditorOptions.RememberFont(font);
+    }
+
     private TextBox? _lastFocusedTextBox;
 
     private void OnAnyGotFocus(object? sender, GotFocusEventArgs e)
@@ -610,17 +645,22 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
     }
 
     /// <summary>
-    /// Wraps an editor command so its keyboard shortcut is a no-op while a text input has focus — letting
+    /// Disables a document keyboard shortcut while a text input has focus — letting
     /// Delete / Ctrl+C/X/V / Ctrl+Z act on the text being edited, not the document. (A NumericUpDown's
     /// inner editor is a TextBox, so its fields are covered too.) Menu clicks bind the raw command.
     /// </summary>
     private sealed class TextAwareCommand(System.Windows.Input.ICommand inner, TopLevel top) : System.Windows.Input.ICommand
     {
-        public bool CanExecute(object? parameter) => inner.CanExecute(parameter);
+        // A KeyBinding consumes the key when CanExecute is true, even if Execute does nothing.
+        // Decline it while typing so TextBox receives Delete, cut/copy/paste and text undo/redo.
+        public bool CanExecute(object? parameter) => !IsTextEditing() && inner.CanExecute(parameter);
+
+        private bool IsTextEditing() => top.FocusManager?.GetFocusedElement() is Visual focused
+            && focused.FindAncestorOfType<TextBox>(includeSelf: true) is not null;
 
         public void Execute(object? parameter)
         {
-            if (top.FocusManager?.GetFocusedElement() is not TextBox) inner.Execute(parameter);
+            if (!IsTextEditing()) inner.Execute(parameter);
         }
 
         public event EventHandler? CanExecuteChanged

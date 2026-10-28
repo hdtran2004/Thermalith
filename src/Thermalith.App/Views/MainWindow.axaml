@@ -473,7 +473,7 @@
                 <Border Padding="24" HorizontalAlignment="Center" VerticalAlignment="Center">
                     <Panel Name="CanvasHost" Focusable="True"
                            Width="{Binding Editor.DisplayWidth}" Height="{Binding Editor.DisplayHeight}"
-                           Background="White"
+                           Background="Transparent"
                            PointerPressed="OnCanvasPressed" PointerMoved="OnCanvasMoved" PointerReleased="OnCanvasReleased"
                            PointerWheelChanged="OnCanvasWheel" DoubleTapped="OnCanvasDoubleTapped">
                         <Panel.ContextMenu>
@@ -540,10 +540,15 @@
                                 <MenuItem Header="Header Column" Command="{Binding CellHeaderColumnCommand}" IsVisible="{Binding Editor.InCellMode}" />
                             </ContextMenu>
                         </Panel.ContextMenu>
+                        <Path Data="{Binding Editor.LabelOutlineGeometry}" Fill="White" IsHitTestVisible="False" />
                         <Image Source="{Binding Editor.Preview}" Stretch="Fill"
-                               RenderOptions.BitmapInterpolationMode="None" />
+                               Clip="{Binding Editor.LabelOutlineGeometry}" RenderOptions.BitmapInterpolationMode="None" />
+                        <Path Data="{Binding Editor.LabelOutlineGeometry}" Stroke="#888888" StrokeThickness="1" IsHitTestVisible="False" />
+                        <Path Data="{Binding Editor.PrintableOutlineGeometry}" Stroke="#E6972A" StrokeThickness="1"
+                              StrokeDashArray="4,3" IsVisible="{Binding Editor.ShowSafeArea}" IsHitTestVisible="False"
+                              Clip="{Binding Editor.LabelOutlineGeometry}" />
                         <views:GridOverlay Spacing="{Binding Editor.GridSpacingDisplay}"
-                                           IsVisible="{Binding Editor.ShowGrid}" />
+                                           IsVisible="{Binding Editor.ShowGrid}" Clip="{Binding Editor.LabelOutlineGeometry}" />
                         <!-- Print-area boundary is now drawn as full-span lines by PrintGuideOverlay
                              (over the whole viewport), not a box hugging the label. -->
                         <Canvas>
@@ -627,7 +632,12 @@
                             <TextBox x:Name="CellEditor" IsVisible="{Binding Editor.IsCellEditing}"
                                      Canvas.Left="{Binding Editor.CellEditorRect.X}" Canvas.Top="{Binding Editor.CellEditorRect.Y}"
                                      Width="{Binding Editor.CellEditorRect.Width}" Height="{Binding Editor.CellEditorRect.Height}"
-                                     MinHeight="0" Padding="2,0" FontSize="11"
+                                     MinHeight="0" Padding="2,0" FontSize="{Binding Editor.CellTypography.FontSize}"
+                                     FontFamily="{Binding Editor.CellTypography.FontFamily}"
+                                     FontWeight="{Binding Editor.CellTypography.FontWeight}"
+                                     FontStyle="{Binding Editor.CellTypography.FontStyle}"
+                                     TextAlignment="{Binding Editor.CellTypography.TextAlignment}"
+                                     VerticalContentAlignment="{Binding Editor.CellTypography.VerticalAlignment}"
                                      Text="{Binding Editor.CellEditText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                      KeyDown="OnCellEditorKeyDown" LostFocus="OnCellEditorLostFocus" />
                         </Canvas>
@@ -636,9 +646,14 @@
                             <TextBox x:Name="PrimaryEditor" IsVisible="{Binding Editor.IsPrimaryEditing}"
                                      Canvas.Left="{Binding Editor.PrimaryEditorRect.X}" Canvas.Top="{Binding Editor.PrimaryEditorRect.Y}"
                                      Width="{Binding Editor.PrimaryEditorRect.Width}" Height="{Binding Editor.PrimaryEditorRect.Height}"
-                                     MinHeight="0" Padding="2,0" FontSize="11"
+                                     MinHeight="0" Padding="2,0" FontSize="{Binding Editor.PrimaryTypography.FontSize}"
+                                     FontFamily="{Binding Editor.PrimaryTypography.FontFamily}"
+                                     FontWeight="{Binding Editor.PrimaryTypography.FontWeight}"
+                                     FontStyle="{Binding Editor.PrimaryTypography.FontStyle}"
+                                     TextAlignment="{Binding Editor.PrimaryTypography.TextAlignment}"
+                                     VerticalContentAlignment="{Binding Editor.PrimaryTypography.VerticalAlignment}"
                                      AcceptsReturn="{Binding Editor.PrimaryEditMultiline}"
-                                     TextWrapping="Wrap" VerticalContentAlignment="Top"
+                                     TextWrapping="Wrap"
                                      Text="{Binding Editor.PrimaryEditText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                      KeyDown="OnPrimaryEditorKeyDown" LostFocus="OnPrimaryEditorLostFocus" />
                         </Canvas>
@@ -688,6 +703,15 @@
                             <Grid Classes="frow" ColumnDefinitions="70,*"><TextBlock Text="Rows" /><NumericUpDown Grid.Column="1" Value="{Binding Editor.((ed:TableEditorViewModel)SelectedEditor).Rows, Converter={StaticResource Nz}}" Minimum="1" FormatString="0" /></Grid>
                             <Grid Classes="frow" ColumnDefinitions="70,*"><TextBlock Text="Line Weight" /><NumericUpDown Grid.Column="1" Value="{Binding Editor.((ed:TableEditorViewModel)SelectedEditor).BorderWidthMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" /></Grid>
                             <TextBlock Classes="section" Text="Cell" />
+                            <Grid Classes="frow" ColumnDefinitions="90,*">
+                                <TextBlock Text="Font" />
+                                <ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.CellFontItems}" SelectedValueBinding="{ReflectionBinding Content}" SelectedValue="{Binding Editor.CellFontFamily, Mode=OneWay}" Tag="cell" DropDownOpened="OnFontDropDownOpened" SelectionChanged="OnFontSelectionChanged" />
+                            </Grid>
+                            <Grid Classes="frow" ColumnDefinitions="90,*">
+                                <TextBlock Text="Size pt" />
+                                <NumericUpDown Grid.Column="1" Value="{Binding Editor.CellFontSizePt, Converter={StaticResource Nz}}" Minimum="1" Maximum="500" Watermark="table default" />
+                            </Grid>
+
                             <StackPanel Orientation="Horizontal" Spacing="4">
                                 <Button Content="Merge" Command="{Binding CellMergeCommand}" />
                                 <Button Content="Unmerge" Command="{Binding CellUnmergeCommand}" />
@@ -724,6 +748,7 @@
                                 <ToggleButton Content="Column" IsChecked="{Binding Editor.CellHeaderColumn}" />
                             </StackPanel>
                             <TextBlock Text="Double-click a cell to edit · Esc to exit" Foreground="{DynamicResource TextHint}" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0" />
+                            <Button Content="Apply format to all cells" Command="{Binding ApplyFormatToAllCellsCommand}" HorizontalAlignment="Stretch" Margin="0,8,0,0" />
                             <Separator Margin="0,4" />
                         </StackPanel>
                         <ContentControl Name="InspectorHost" Content="{Binding Editor.InspectorTarget}"
@@ -756,7 +781,7 @@
                                              ToolTip.Tip="The text to print. Use {token} placeholders for data-merge fields; Enter adds a line break." />
 
                                     <TextBlock Classes="section" Text="Font" />
-                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Typeface. The list is the app's bundled fonts; an unavailable font falls back at render (flagged by the validator)."><TextBlock Text="Font" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.Fonts}" SelectedItem="{Binding SelectedFont}" /></Grid>
+                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Typeface. The list is the app's bundled fonts; an unavailable font falls back at render (flagged by the validator)."><TextBlock Text="Font" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.FontItems}" SelectedValueBinding="{ReflectionBinding Content}" SelectedValue="{Binding SelectedFont, Mode=OneWay}" Tag="text" DropDownOpened="OnFontDropDownOpened" SelectionChanged="OnFontSelectionChanged" /></Grid>
                                     <!-- Size + B/I/U share one row. -->
                                     <Grid Classes="frow" ColumnDefinitions="90,120,*">
                                         <TextBlock Text="Size (pt)" />
@@ -792,11 +817,32 @@
                             <DataTemplate DataType="ed:QrEditorViewModel">
                                 <StackPanel Spacing="2">
                                     <views:BaseElementFields />
+                                    <TextBlock Text="Drag the blue handles to resize the code only. Caption size is controlled below." TextWrapping="Wrap" />
+                                    <CheckBox Content="Keep QR square when resizing" IsChecked="{Binding LockAspect}" />
+                                    <Button Content="Make square / Auto module size" Command="{Binding MakeSquareCommand}" />
+
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="The data to encode in the QR code — text, a URL, etc."><TextBlock Text="Value" /><TextBox Grid.Column="1" Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Character encoding for the QR payload (e.g. UTF-8 / byte). Use the default unless the target reader needs a specific mode."><TextBlock Text="Encoding" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.QrEncoding}" SelectedItem="{Binding Encoding}" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Error-correction level — higher recovers from more damage/smudging but makes the code denser. L≈7%, M≈15%, Q≈25%, H≈30%."><TextBlock Text="EC level" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.EcLevel}" SelectedItem="{Binding EcLevel}" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Module mm" /><NumericUpDown Grid.Column="1" Value="{Binding ModuleSizeMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" Watermark="auto" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Quiet mm" ToolTip.Tip="Blank margin around the code, required for reliable scanning. The gap to the selection box is the quiet zone, not a bug; 0 hugs the box but can hurt scannability." /><NumericUpDown Grid.Column="1" Value="{Binding QuietZoneMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" ToolTip.Tip="Blank margin around the code, required for reliable scanning. 0 hugs the box but can hurt scannability." /></Grid>
+                                    <TextBlock Classes="section" Text="Value caption" />
+                                    <CheckBox Content="Show value" IsChecked="{Binding ShowText}" />
+                                    <StackPanel Spacing="2" IsVisible="{Binding ShowText}">
+                                        <TextBlock Text="Caption is outside the QR box. Alignment follows the code edges; Wrap = none allows text to extend sideways." TextWrapping="Wrap" />
+                                        <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Position" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.QrTextPositions}" SelectedItem="{Binding TextPosition}" /></Grid>
+                                        <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Font" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.QrCaptionFontItems}" SelectedValueBinding="{ReflectionBinding Content}" SelectedValue="{Binding TextFontFamily, Mode=OneWay}" Tag="qr" DropDownOpened="OnFontDropDownOpened" SelectionChanged="OnFontSelectionChanged" /></Grid>
+                                        <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Alignment" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.QrTextAlignments}" SelectedItem="{Binding TextAlignment}" /></Grid>
+                                        <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Wrap" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.Wrap}" SelectedItem="{Binding TextWrap}" /></Grid>
+                                        <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Size pt" /><NumericUpDown Grid.Column="1" Value="{Binding TextSizePt, Converter={StaticResource Nz}}" Minimum="1" Maximum="100" Increment="0.1" FormatString="0.0#" /></Grid>
+                                        <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Height mm" /><NumericUpDown Grid.Column="1" Value="{Binding TextHeightMm, Converter={StaticResource Nz}}" Minimum="0.1" Maximum="100" Increment="0.1" FormatString="0.0#" /></Grid>
+                                        <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Gap mm" /><NumericUpDown Grid.Column="1" Value="{Binding TextGapMm, Converter={StaticResource Nz}}" Minimum="0" Maximum="50" Increment="0.1" FormatString="0.0#" /></Grid>
+                                        <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Char spacing" /><NumericUpDown Grid.Column="1" Value="{Binding TextLetterSpacing, Converter={StaticResource Nz}}" Minimum="-10" Maximum="50" Increment="0.1" FormatString="0.0#" /></Grid>
+                                        <StackPanel Orientation="Horizontal" Spacing="10">
+                                            <CheckBox Content="Bold" IsChecked="{Binding TextBold}" />
+                                            <CheckBox Content="Italic" IsChecked="{Binding TextItalic}" />
+                                        </StackPanel>
+                                    </StackPanel>
                                 </StackPanel>
                             </DataTemplate>
 

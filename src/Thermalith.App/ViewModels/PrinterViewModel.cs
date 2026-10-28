@@ -381,6 +381,17 @@ public sealed partial class PrinterViewModel : ObservableObject
         }
     }
 
+    public Func<Task<bool>>? ConfirmLoadedLabelAsync { get; set; }
+
+    // Read the tag immediately before printing; never silently resize the document or change media settings.
+    public async Task<RfidInfo?> ReadLoadedRollForPrintAsync()
+    {
+        if (_client is null) return null;
+        var rfid = await _client.GetRfidInfoAsync();
+        UpdateLoadedRoll(rfid);
+        return rfid;
+    }
+
     public Func<int, Task<bool>>? ConfirmLargeCopyCountAsync { get; set; }
 
     private async Task<bool> ConfirmCopiesAsync(int copies)
@@ -444,6 +455,7 @@ public sealed partial class PrinterViewModel : ObservableObject
         {
             var requestedCopies = Math.Max(1, Copies);
             if (!await ConfirmCopiesAsync(requestedCopies)) { Message = "Print cancelled."; return; }
+            if (ConfirmLoadedLabelAsync is not null && !await ConfirmLoadedLabelAsync()) { Message = "Print cancelled."; return; }
             _printCancellation.Token.ThrowIfCancellationRequested();
             var mono = _editor.RenderForPrint();
             var rawW = mono.WidthPx;
@@ -511,6 +523,7 @@ public sealed partial class PrinterViewModel : ObservableObject
         {
             var copies = Math.Max(1, Copies);
             if (rowCount > 0 && !await ConfirmCopiesAsync(copies)) { Message = "Print cancelled."; return 0; }
+            if (rowCount > 0 && ConfirmLoadedLabelAsync is not null && !await ConfirmLoadedLabelAsync()) { Message = "Print cancelled."; return 0; }
             for (var i = 0; i < rowCount; i++)
             {
                 if (cancelled() || _printCancellation.IsCancellationRequested) break; // stop before the next row

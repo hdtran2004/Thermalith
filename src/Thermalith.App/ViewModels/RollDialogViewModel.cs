@@ -33,6 +33,7 @@ public sealed partial class RollDialogViewModel : ObservableObject
         _height = seed.HeightMm;
         _shape = string.IsNullOrEmpty(seed.Shape) ? "rectangle" : seed.Shape;
         _density = seed.Density;
+        _cornerRadiusMm = seed.CornerRadiusMm ?? 2;
     }
 
     public string Title { get; }
@@ -49,6 +50,7 @@ public sealed partial class RollDialogViewModel : ObservableObject
     [ObservableProperty] private double _height;
     [ObservableProperty] private string _shape;
     [ObservableProperty] private int? _density;
+    [ObservableProperty] private double _cornerRadiusMm = 2;
 
     // Typing/pasting the part name pre-fills the size from its W*H pattern.
     partial void OnPartNameChanged(string value)
@@ -74,6 +76,7 @@ public sealed partial class RollDialogViewModel : ObservableObject
         WidthMm = Width,
         HeightMm = Height,
         Shape = Shape,
+        CornerRadiusMm = Math.Max(0, CornerRadiusMm),
         Density = Density,
     };
 }

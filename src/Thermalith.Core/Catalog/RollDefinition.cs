@@ -33,6 +33,11 @@ public sealed record RollDefinition
     public double WidthMm { get; init; }
     public double HeightMm { get; init; }
     public string Shape { get; init; } = "rectangle";
+    public double? CornerRadiusMm { get; init; }
+    [JsonIgnore]
+    public double EffectiveCornerRadiusMm => Shape == "rounded"
+        ? Math.Clamp(CornerRadiusMm ?? 2, 0, Math.Max(0, Math.Min(WidthMm, HeightMm) / 2)) : 0;
+
     public int? Density { get; init; }
 
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extensions { get; init; }

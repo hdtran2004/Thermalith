@@ -35,6 +35,7 @@ public partial class MainWindowViewModel : ViewModelBase
         _settings = settingsService.Load();
         Editor = new EditorViewModel();
         Printer = new PrinterViewModel(Editor);
+        Printer.ConfirmLoadedLabelAsync = ConfirmLoadedLabelAsync;
         DataMerge = new DataMergeViewModel(Editor, Printer, s => StatusMessage = s);
         RecentFiles = new ObservableCollection<string>(_settings.RecentFiles);
 
@@ -191,7 +192,7 @@ public partial class MainWindowViewModel : ViewModelBase
         if (def is null) return; // cancelled
 
         Editor.NewDocument();
-        Editor.ApplyRoll(def.WidthMm, def.HeightMm, def.Shape, Printer.ConnectedDpi, Printer.ConnectedPrintableWidthMm);
+        Editor.ApplyRoll(def.WidthMm, def.HeightMm, def.Shape, Printer.ConnectedDpi, Printer.ConnectedPrintableWidthMm, def.EffectiveCornerRadiusMm);
         AutoOrientForSideFed();
         Printer.ApplyPaperType(def.PaperType);
         _rollStore.Remember(def);
@@ -306,13 +307,55 @@ public partial class MainWindowViewModel : ViewModelBase
         // Canvas = label model: a roll only sizes the canvas for a *fresh* (empty) doc. If the user has
         // a design, preserve their size and just target the printer (printhead width + dpi) + paper type.
         if (Editor.HasElements)
-            Editor.SetPrinterTarget(Printer.ConnectedPrintableWidthMm, Printer.ConnectedDpi);
+            Editor.SetPrinterTarget(Printer.ConnectedPrintableWidthMm, Printer.ConnectedDpi, roll.Shape, roll.EffectiveCornerRadiusMm);
         else
-            Editor.ApplyRoll(roll.WidthMm, roll.HeightMm, roll.Shape, Printer.ConnectedDpi, Printer.ConnectedPrintableWidthMm);
+            Editor.ApplyRoll(roll.WidthMm, roll.HeightMm, roll.Shape, Printer.ConnectedDpi, Printer.ConnectedPrintableWidthMm, roll.EffectiveCornerRadiusMm);
         AutoOrientForSideFed();
         Printer.ApplyPaperType(roll.PaperType);
         RememberCanvas();
         return Editor.HasPrintableMargin; // a printable margin exists (label wider than the head)
+    }
+
+    private async Task<bool> ConfirmLoadedLabelAsync()
+    {
+        var issues = new List<string>();
+        RollDefinition? roll = null;
+        Niimbot.Net.Commands.RfidInfo? tag = null;
+        try
+        {
+            tag = await Printer.ReadLoadedRollForPrintAsync();
+            if (tag is { TagPresent: true } detectedTag) roll = _rollStore.FindByBarcode(detectedTag.Barcode);
+            else issues.Add("The loaded roll could not be identified from its RFID tag.");
+        }
+        catch { issues.Add("The printer's loaded roll could not be read."); }
+
+        var (width, height, _, _, _, _, orientation) = Editor.CurrentCanvas();
+        if (orientation is 90 or 270) (width, height) = (height, width);
+        if (roll is not null)
+        {
+            if (Math.Abs(roll.WidthMm - width) > 0.1 || Math.Abs(roll.HeightMm - height) > 0.1)
+                issues.Add($"Loaded roll: {roll.Name} ({roll.WidthMm:0.##} × {roll.HeightMm:0.##} mm).\nDesign: {width:0.##} × {height:0.##} mm.");
+        }
+        else if (tag is { TagPresent: true })
+            issues.Add("This roll has no saved definition, so its dimensions cannot be verified. Use Change labels to define it.");
+
+        var expectedType = Printer.SelectedLabelType ?? LabelType.WithGaps;
+        if (roll is not null)
+        {
+            var loadedPaper = roll.PaperType.ToLowerInvariant();
+            if (loadedPaper is "gap" or "black" or "continuous" or "transparent")
+            {
+                if (loadedPaper != MapPaper(expectedType))
+                    issues.Add($"Loaded roll type: {loadedPaper}. Selected print type: {expectedType}.");
+            }
+            else issues.Add($"The saved roll type '{roll.PaperType}' cannot be compared with the selected print type.");
+        }
+        else if (tag is { TagPresent: true } detectedMedia && Enum.IsDefined(detectedMedia.ConsumablesType) && detectedMedia.ConsumablesType != expectedType)
+            issues.Add($"RFID media type: {detectedMedia.ConsumablesType}. Selected print type: {expectedType}.");
+
+        if (issues.Count == 0) return true;
+        if (Dialogs is null) { StatusMessage = string.Join(" ", issues); return false; }
+        return await Dialogs.ConfirmAsync("Check loaded label", string.Join("\n\n", issues) + "\n\nPrint anyway?", "Print anyway");
     }
 
     private static string MapPaper(LabelType t) => t switch
@@ -467,6 +510,30 @@ public partial class MainWindowViewModel : ViewModelBase
 
     // ── Table cell operations (in cell-edit mode) — bound by both the right-click menu and the props panel ──
     private bool InCell() => Editor.InCellMode;
+    [RelayCommand]
+    private async Task ApplyFormatToAllCellsAsync()
+    {
+        if (!Editor.InCellMode || Dialogs is null) return;
+        if (!await Dialogs.ConfirmAsync("Apply format to all cells",
+            "Apply the active cell's font, size, bold/italic, alignment, fill and text colour to all cells in this table?\n\nCell contents and merged cells will be preserved.", "Apply formatting")) return;
+        Editor.CopyCellFormatting();
+        Editor.PasteCellFormatting(allCells: true);
+    }
+
+    [RelayCommand]
+    private void CopyCellFormatting() => Editor.CopyCellFormatting();
+
+    [RelayCommand]
+    private async Task PasteCellFormattingAsync(string? scope)
+    {
+        if (!Editor.CanPasteCellFormatting || Dialogs is null) return;
+        var all = scope == "all";
+        var target = all ? "all cells in this table" : "the selected cells";
+        if (!await Dialogs.ConfirmAsync("Copy cell formatting",
+            $"Apply the copied font, size, bold/italic, alignment, fill and text colour to {target}?\n\nCell contents and merged cells will be preserved.", "Apply formatting")) return;
+        Editor.PasteCellFormatting(all);
+    }
+
     [RelayCommand(CanExecute = nameof(InCell))] private void CellMerge() => Editor.MergeCells();
     [RelayCommand(CanExecute = nameof(InCell))] private void CellUnmerge() => Editor.UnmergeCells();
     [RelayCommand(CanExecute = nameof(InCell))] private void CellFill(string? pct) { if (int.TryParse(pct, out var p)) Editor.SetCellFill(p); }
