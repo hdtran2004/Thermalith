@@ -3,11 +3,14 @@ using Avalonia.Interactivity;
 
 namespace Thermalith.App.Views;
 
-/// <summary>Minimal modal confirm for discarding unsaved changes (§7). Returns true to discard.</summary>
+public enum UnsavedChangesChoice { Cancel, Discard, Save }
+
+/// <summary>Ask whether to save, discard, or keep editing unsaved work.</summary>
 public partial class ConfirmDialog : Window
 {
     public ConfirmDialog() => InitializeComponent();
 
-    private void OnDiscard(object? sender, RoutedEventArgs e) => Close(true);
-    private void OnCancel(object? sender, RoutedEventArgs e) => Close(false);
+    private void OnSave(object? sender, RoutedEventArgs e) => Close(UnsavedChangesChoice.Save);
+    private void OnDiscard(object? sender, RoutedEventArgs e) => Close(UnsavedChangesChoice.Discard);
+    private void OnCancel(object? sender, RoutedEventArgs e) => Close(UnsavedChangesChoice.Cancel);
 }

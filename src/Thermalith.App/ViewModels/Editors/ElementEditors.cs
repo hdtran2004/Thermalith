@@ -114,6 +114,7 @@ public sealed partial class QrEditorViewModel : ElementEditorViewModel
     [ObservableProperty] private double _textSizePt;
     [ObservableProperty] private bool _textBold;
     [ObservableProperty] private bool _textItalic;
+    [ObservableProperty] private bool _textUnderline;
     [ObservableProperty] private string _textAlignment;
     [ObservableProperty] private string _textWrap;
     [ObservableProperty] private double _textLetterSpacing;
@@ -134,6 +135,7 @@ public sealed partial class QrEditorViewModel : ElementEditorViewModel
         _textSizePt = el.Props.TextSizePt;
         _textBold = el.Props.TextBold;
         _textItalic = el.Props.TextItalic;
+        _textUnderline = el.Props.TextUnderline;
         _textAlignment = el.Props.TextAlignment;
         _textWrap = el.Props.TextWrap;
         _textLetterSpacing = el.Props.TextLetterSpacing;
@@ -160,7 +162,7 @@ public sealed partial class QrEditorViewModel : ElementEditorViewModel
     public override LabelElement ToElement() => new QrElement
     {
         Id = Id, Name = Name, X = X, Y = Y, W = W, H = H, Rotation = Rotation, Locked = Locked, Visible = Visible, Justify = JustifyValue(),
-        Props = new QrProps { LockAspect = LockAspect, Value = Value, Encoding = Encoding, EcLevel = EcLevel, ModuleSizeMm = ModuleSizeMm, QuietZoneMm = QuietZoneMm, ShowText = ShowText, TextPosition = TextPosition, TextFontFamily = TextFontFamily, TextSizePt = TextSizePt, TextBold = TextBold, TextItalic = TextItalic, TextAlignment = TextAlignment, TextWrap = TextWrap, TextLetterSpacing = TextLetterSpacing, TextHeightMm = TextHeightMm, TextGapMm = TextGapMm },
+        Props = new QrProps { LockAspect = LockAspect, Value = Value, Encoding = Encoding, EcLevel = EcLevel, ModuleSizeMm = ModuleSizeMm, QuietZoneMm = QuietZoneMm, ShowText = ShowText, TextPosition = TextPosition, TextFontFamily = TextFontFamily, TextSizePt = TextSizePt, TextBold = TextBold, TextItalic = TextItalic, TextUnderline = TextUnderline, TextAlignment = TextAlignment, TextWrap = TextWrap, TextLetterSpacing = TextLetterSpacing, TextHeightMm = TextHeightMm, TextGapMm = TextGapMm },
     };
 }
 
@@ -404,4 +406,13 @@ public sealed partial class TableEditorViewModel : ElementEditorViewModel
             Cells = CellRows.Select(r => r.Cells.Select(c => new TableCell { Content = c.Content }).ToList()).ToList(),
         },
     };
+}
+
+public sealed class BlockEditorViewModel : ElementEditorViewModel
+{
+    private readonly BlockElement _element;
+    public override string TypeLabel => "Linked custom block";
+    public string BlockId => _element.BlockId;
+    public BlockEditorViewModel(BlockElement element, Action<string?> changed) : base(element,changed) { _element = element; MarkLoaded(); }
+    public override LabelElement ToElement() => _element with { X = X,Y = Y, Name = Name, Locked = Locked, Visible = Visible };
 }

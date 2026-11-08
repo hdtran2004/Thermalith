@@ -5,7 +5,7 @@ namespace Niimbot.Net;
 /// <summary>Raised when the printer reports an error during a print or rejects a command.</summary>
 public class PrintException : Exception
 {
-    public PrintException(string message, PrinterErrorCode? code = null) : base(message)
+    public PrintException(string message, PrinterErrorCode? code = null,Exception? innerException = null) : base(message,innerException)
     {
         Code = code;
     }

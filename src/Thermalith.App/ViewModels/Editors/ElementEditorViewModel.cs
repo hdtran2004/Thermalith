@@ -88,6 +88,7 @@ public abstract partial class ElementEditorViewModel : ObservableObject
     /// the changed property (null for non-property edits) so multi-select can propagate just that field.</summary>
     public static ElementEditorViewModel Create(LabelElement el, Action<string?> onChanged) => el switch
     {
+        BlockElement b => new BlockEditorViewModel(b,onChanged),
         TextElement t => new TextEditorViewModel(t, onChanged),
         BarcodeElement b => new BarcodeEditorViewModel(b, onChanged),
         QrElement q => new QrEditorViewModel(q, onChanged),

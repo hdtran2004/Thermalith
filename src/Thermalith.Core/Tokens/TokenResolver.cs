@@ -44,8 +44,17 @@ public sealed partial class TokenResolver
     [GeneratedRegex("""\{\{|\}\}|\{\s*"(?<q>[^"]*)"\s*\}|\{\s*(?<ord>\d+)\s*\}|\{(?<name>[A-Za-z_][A-Za-z0-9_]*)\}""")]
     private static partial Regex TokenPattern();
 
+    public static IReadOnlyList<string> ReferencedNames(string? content) => TokenPattern().Matches(content ?? "")
+        .Cast<Match>().Where(m => m.Groups["name"].Success || m.Groups["q"].Success)
+        .Select(m => m.Groups["q"].Success ? m.Groups["q"].Value : m.Groups["name"].Value).ToList();
+    public static string RewriteNames(string? content,IReadOnlyDictionary<string,string> names) => TokenPattern().Replace(content ?? "",match =>
+    {
+        var name = match.Groups["q"].Success ? match.Groups["q"].Value : match.Groups["name"].Success ? match.Groups["name"].Value : null;
+        return name is not null && names.TryGetValue(name,out var mapped) && mapped != name ? "{" + mapped + "}" : match.Value;
+    });
     private readonly IReadOnlyDictionary<string, object?>? _data;
     private readonly IReadOnlyList<object?>? _ordinals;
+    private readonly IReadOnlyDictionary<string, string>? _parameters;
     private readonly IReadOnlyDictionary<string, string>? _bindings;
     private readonly Dictionary<string, TokenDecl> _decls;
 
@@ -53,8 +62,9 @@ public sealed partial class TokenResolver
         IReadOnlyDictionary<string, object?>? data,
         IReadOnlyDictionary<string, string>? bindings = null,
         IEnumerable<TokenDecl>? decls = null,
-        IReadOnlyList<object?>? ordinals = null)
+        IReadOnlyList<object?>? ordinals = null, IReadOnlyDictionary<string, string>? parameters = null)
     {
+        _parameters = parameters;
         _data = data;
         _ordinals = ordinals;
         _bindings = bindings;
@@ -115,6 +125,7 @@ public sealed partial class TokenResolver
 
     private (string Value, TokenResolution Status) Lookup(string name)
     {
+        if (_parameters is not null && _parameters.TryGetValue(name, out var parameter)) return (parameter, TokenResolution.FromData);
         var column = _bindings is not null && _bindings.TryGetValue(name, out var mapped) ? mapped : name;
 
         if (_data is not null && TryGetData(column, out var raw))

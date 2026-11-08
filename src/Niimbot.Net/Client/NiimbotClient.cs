@@ -1,4 +1,4 @@
-using System.Buffers;
+﻿using System.Buffers;
 using Niimbot.Net.Capabilities;
 using Niimbot.Net.Commands;
 using Niimbot.Net.Diagnostics;
@@ -153,6 +153,8 @@ public sealed class NiimbotClient : IAsyncDisposable
     /// streams the RLE-encoded rows, then polls status to completion. <paramref name="progress"/> is
     /// reported during the wait.
     /// </summary>
+    private DateTimeOffset _lastPrintCompletedAt;
+
     public async Task PrintAsync(
         MonochromeBitmap bitmap,
         PrintOptions? options = null,
@@ -163,6 +165,17 @@ public sealed class NiimbotClient : IAsyncDisposable
             throw new InvalidOperationException("Connect before printing.");
 
         options ??= new PrintOptions();
+        if (SupportsContinuousBatch)
+        {
+            await PrintContinuousAsync(1, _ => bitmap, options, progress: progress, ct: ct).ConfigureAwait(false);
+            return;
+        }
+        // Leave a short settling interval after PrintEnd, including between changing parameter labels.
+        if (profile.ModelIds.Contains(6400) || profile.ModelIds.Contains(4608))
+        {
+            var remaining = TimeSpan.FromMilliseconds(250) - (DateTimeOffset.UtcNow - _lastPrintCompletedAt);
+            if (remaining > TimeSpan.Zero) await Task.Delay(remaining,ct).ConfigureAwait(false);
+        }
         var density = options.Density ?? profile.DensityDefault;
         var totalPages = Math.Max(1, options.Copies);
 
@@ -185,8 +198,8 @@ public sealed class NiimbotClient : IAsyncDisposable
         });
 
         // Print init.
-        await SendAsync(PacketGenerator.SetDensity(density), TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
-        await SendAsync(PacketGenerator.SetLabelType(options.LabelType), TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
+        await SendPrintSetupAsync(PacketGenerator.SetDensity(density), profile, ct).ConfigureAwait(false);
+        await SendPrintSetupAsync(PacketGenerator.SetLabelType(options.LabelType), profile, ct).ConfigureAwait(false);
         await SendStartAsync(profile, totalPages, options.PageColor, ct).ConfigureAwait(false);
 
         // Page sequence — the three task families diverge here.
@@ -225,6 +238,110 @@ public sealed class NiimbotClient : IAsyncDisposable
             await TrySendAsync(PacketGenerator.Heartbeat(HeartbeatType.Advanced1), TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false);
 
         await SendAsync(PacketGenerator.PrintEnd(), TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+        _lastPrintCompletedAt = DateTimeOffset.UtcNow;
+    }
+
+    /// <summary>Models verified against local NIIMBOT USB captures.</summary>
+    public bool SupportsContinuousBatch => Profile is { } p && (p.ModelIds.Contains(4608) || p.ModelIds.Contains(6400));
+
+    /// <summary>Queue distinct raster pages in one job. Callback runs only for printer-reported completed labels.</summary>
+    public async Task PrintContinuousAsync(int pageCount, Func<int, MonochromeBitmap> renderPage,
+        PrintOptions? options = null, Action? labelCompleted = null,
+        IProgress<PrintProgress>? progress = null, CancellationToken ct = default)
+    {
+        if (!SupportsContinuousBatch || Profile is not { } profile)
+            throw new InvalidOperationException("Continuous jobs are supported only on capture-verified M2_H/M3 models.");
+        options ??= new PrintOptions();
+        if (pageCount < 1) throw new ArgumentOutOfRangeException(nameof(pageCount));
+        var copies = Math.Max(1, options.Copies);
+        var total = checked(pageCount * copies);
+        if (total > ushort.MaxValue) throw new ArgumentOutOfRangeException(nameof(pageCount), "A job supports at most 65535 labels.");
+        var m3 = profile.ModelIds.Contains(6400);
+        var completed = 0;
+        var queued = 0;
+        var lastProgress = DateTimeOffset.UtcNow;
+        PrintStatus? previousStatus = null;
+        // Render/validate the first page before opening a physical job.
+        MonochromeBitmap Prepare(int index)
+        {
+            var bitmap = renderPage(index);
+            if (bitmap.WidthPx > profile.PrintheadPixels)
+                throw new ArgumentException("Bitmap exceeds the printer head width.", nameof(renderPage));
+            return PositionOnHead(bitmap, profile.PrintheadPixels, options);
+        }
+        var first = Prepare(0);
+        await SendPrintSetupAsync(PacketGenerator.SetLabelType(options.LabelType), profile, ct).ConfigureAwait(false);
+        await SendPrintSetupAsync(PacketGenerator.SetDensity(options.Density ?? profile.DensityDefault), profile, ct).ConfigureAwait(false);
+        var start = m3 ? PacketGenerator.PrintStart9b(total, options.PageColor)
+            : new NiimbotPacket(RequestCommandId.PrintStart,
+                [(byte)(total >> 8), (byte)total, 0, 0, 0, 0, (byte)options.PageColor, 0]);
+        await SendPrintSetupAsync(start, profile, ct).ConfigureAwait(false);
+        // M3's official page header carries a 32-character job identifier after 13 size bytes.
+        var jobId = System.Text.Encoding.ASCII.GetBytes(Guid.NewGuid().ToString("N"));
+        for (var index = 0; index < pageCount; index++)
+        {
+            ct.ThrowIfCancellationRequested();
+            // Keep bounded lookahead so large jobs cannot overflow the printer's page buffer.
+            while (queued - completed >= 2)
+            {
+                await Task.Delay(options.StatusPollInterval, ct).ConfigureAwait(false);
+                await Poll().ConfigureAwait(false);
+            }
+            var page = index == 0 ? first : Prepare(index);
+            if (!m3) await SendPrintSetupAsync(PacketGenerator.PageStart(), profile, ct).ConfigureAwait(false);
+            var size = m3 ? PacketGenerator.SetPageSize13b(page.HeightPx, page.WidthPx, copies)
+                : PacketGenerator.SetPageSize(page.HeightPx, page.WidthPx, copies);
+            if (m3) size = new NiimbotPacket(RequestCommandId.SetPageSize, [.. size.Data, .. jobId]);
+            var reply = await SendAsync(size, options.PageTimeout, ct).ConfigureAwait(false);
+            if (reply?.Data.Length < 1 || reply?.Data[0] != 1)
+                throw new PrintException($"Printer rejected the size of page {index + 1}/{pageCount}.");
+            foreach (var row in RowEncoder.Encode(page, new RowEncoder.Options
+            {
+                PrintheadPixels = profile.PrintheadPixels,
+                UseIndexedRows = options.UseIndexedRows,
+                UseRepeatedRows = !m3,
+            }))
+                await SendAsync(row, options.PageTimeout, ct).ConfigureAwait(false);
+            var ended = await SendAsync(PacketGenerator.PageEnd(), options.PageTimeout, ct).ConfigureAwait(false);
+            if (ended?.Data.Length < 1 || ended?.Data[0] != 1) throw new PrintException("Printer rejected PageEnd; the page will not be retried.");
+            queued += copies;
+            // Harvest progress while queuing; never end/restart the job between pages.
+            await Poll().ConfigureAwait(false);
+        }
+        while (completed < total)
+        {
+            await Task.Delay(options.StatusPollInterval, ct).ConfigureAwait(false);
+            await Poll().ConfigureAwait(false);
+        }
+        await SendPrintSetupAsync(PacketGenerator.PrintEnd(), profile, ct).ConfigureAwait(false);
+        _lastPrintCompletedAt = DateTimeOffset.UtcNow;
+
+        async Task Poll()
+        {
+            PrintStatus status;
+            if (m3)
+            {
+                var reply = await SendAsync(new NiimbotPacket(0x89, new byte[] { 0, 0 }, [(ResponseCommandId)0x88]),
+                    TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
+                if (reply is null || reply.Data.Length < 7) throw new NiimbotProtocolException("M3 status payload too short.");
+                var data = reply.Data;
+                status = new PrintStatus((data[3] << 8) | data[4], data[5], data[6]);
+            }
+            else status = await GetPrintStatusAsync(ct).ConfigureAwait(false);
+            // Page is a completed-label counter; percentages describe current printing/feed.
+            if (previousStatus != status) { previousStatus = status; lastProgress = DateTimeOffset.UtcNow; }
+            else if (DateTimeOffset.UtcNow - lastProgress > TimeSpan.FromSeconds(60))
+                throw new NiimbotTimeoutException("Printer made no batch progress for 60 seconds. Check the last printed value before retrying.");
+            if (status.Page > queued) throw new NiimbotProtocolException("Printer returned a completed-page count beyond the queued labels.");
+            var confirmed = Math.Min(total, status.Page);
+            if (confirmed == total && (status.PagePrintProgress < 100 || status.PageFeedProgress < 100)) confirmed--;
+            while (completed < confirmed)
+            {
+                labelCompleted?.Invoke();
+                completed++;
+            }
+            progress?.Report(new PrintProgress(status.Page, total, status.PagePrintProgress, status.PageFeedProgress));
+        }
     }
 
     /// <summary>End an interrupted print job using a fresh token, after its send loop has stopped.</summary>
@@ -307,14 +424,31 @@ public sealed class NiimbotClient : IAsyncDisposable
 
     // --- print-task-version dispatch ---
 
-    private Task SendStartAsync(PrinterProfile profile, int totalPages, int pageColor, CancellationToken ct) =>
-        profile.PrintTaskVersion switch
+    // A zero reply is a rejection, not an acknowledgement. M2_H/M3 can remain busy
+    // after PrintEnd has acknowledged. Retry only an explicitly rejected setup command;
+    // a timeout or printer error is ambiguous and must never cause an automatic retry.
+    private async Task SendPrintSetupAsync(NiimbotPacket packet, PrinterProfile profile, CancellationToken ct)
+    {
+        var canWait = (profile.ModelIds.Contains(4608) || profile.ModelIds.Contains(6400))
+            && packet.Command is (byte)RequestCommandId.SetDensity or (byte)RequestCommandId.SetLabelType or (byte)RequestCommandId.PrintStart;
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+        while (true)
         {
-            PrintTaskVersion.B1 => SendAsync(PacketGenerator.PrintStart(totalPages, pageColor), TimeSpan.FromSeconds(2), ct),
-            // D110M-v4 carries the page count in the 9-byte PrintStart.
-            PrintTaskVersion.D110MV4 => SendAsync(PacketGenerator.PrintStart9b(totalPages, pageColor), TimeSpan.FromSeconds(2), ct),
-            _ => SendAsync(PacketGenerator.PrintStart(), TimeSpan.FromSeconds(2), ct),
-        };
+            var reply = await SendAsync(packet, TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+            if (reply?.Data.Length == 1 && reply.Data[0] == 1) return;
+            if (!canWait || reply?.Data.Length != 1 || reply.Data[0] != 0 || DateTimeOffset.UtcNow >= deadline)
+                throw new PrintException($"Printer did not accept {(RequestCommandId)packet.Command}. The command will not be advanced until accepted. Check the last printed value before trying again.");
+            await Task.Delay(500, ct).ConfigureAwait(false);
+        }
+    }
+
+    private Task SendStartAsync(PrinterProfile profile, int totalPages, int pageColor, CancellationToken ct) =>
+        SendPrintSetupAsync(profile.PrintTaskVersion switch
+        {
+            PrintTaskVersion.B1 => PacketGenerator.PrintStart(totalPages, pageColor),
+            PrintTaskVersion.D110MV4 => PacketGenerator.PrintStart9b(totalPages, pageColor),
+            _ => PacketGenerator.PrintStart(),
+        }, profile, ct);
 
     private Task SendPageSizeAsync(PrinterProfile profile, MonochromeBitmap bitmap, int copies, CancellationToken ct) =>
         profile.PrintTaskVersion switch
@@ -360,7 +494,7 @@ public sealed class NiimbotClient : IAsyncDisposable
             r.Skip(2);
             var error = r.ReadU8();
             if (error != 0)
-                throw new PrintException($"Printer reported error code 0x{error:X2} during print.", (PrinterErrorCode)error);
+                throw new PrintException($"Printer reported {(PrinterErrorCode)error} (0x{error:X2}) during print.", (PrinterErrorCode)error);
         }
 
         return new PrintStatus(page, pagePrint, pageFeed);
@@ -554,6 +688,11 @@ public sealed class NiimbotClient : IAsyncDisposable
                 NiimbotTrace.Log("cmd", $"← reply to {(RequestCommandId)packet.Command} (cmd 0x{reply.Command:X2})");
                 return reply;
             }
+            catch (PrintException ex)
+            {
+                NiimbotTrace.Log("cmd", $"Print error during {(RequestCommandId)packet.Command}: {ex.Message}");
+                throw new PrintException($"{ex.Message} Command: {(RequestCommandId)packet.Command}.",ex.Code,ex);
+            }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 NiimbotTrace.Log("cmd", $"✗ timeout {(RequestCommandId)packet.Command} after {timeout.TotalMilliseconds:0} ms");
@@ -655,7 +794,7 @@ public sealed class NiimbotClient : IAsyncDisposable
             else if (cmd == ResponseCommandId.In_PrintError)
                 Tcs.TrySetException(new PrintException(
                     packet.Data.Length > 0
-                        ? $"Printer reported error code 0x{packet.Data[0]:X2}."
+                        ? $"Printer reported {(PrinterErrorCode)packet.Data[0]} (0x{packet.Data[0]:X2})."
                         : "Printer reported a print error.",
                     packet.Data.Length > 0 ? (PrinterErrorCode)packet.Data[0] : null));
             else

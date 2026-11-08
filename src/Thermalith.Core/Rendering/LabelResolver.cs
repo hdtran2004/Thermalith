@@ -1,12 +1,17 @@
 using System.Globalization;
 using Thermalith.Core.Model;
 using Thermalith.Core.Tokens;
+using Thermalith.Core.Serialization;
 
 namespace Thermalith.Core.Rendering;
 
 /// <summary>Inputs to the RESOLVE stage — the data row, the row index (serial advance), a frozen clock, and assets.</summary>
 public sealed record ResolveContext
 {
+    public Func<string,LabelPackage>? BlockProvider { get; init; }
+    public IReadOnlyList<string> BlockStack { get; init; } = [];
+    public IReadOnlyDictionary<string,string>? ParameterValues { get; init; }
+    public IReadOnlyDictionary<string,string>? ParameterIdValues { get; init; }
     /// <summary>The supplied data row, token-name (or bound column) → value (§6.5).</summary>
     public IReadOnlyDictionary<string, object?>? Data { get; init; }
 
@@ -17,6 +22,8 @@ public sealed record ResolveContext
 
     /// <summary>Zero-based row index across a batch — drives serial-number advance (§6.5).</summary>
     public int RowIndex { get; init; }
+    public int? LabelIndex { get; init; }
+    public bool ShowParameterReferences { get; init; }
 
     /// <summary>The frozen clock for <c>datetime</c> elements with <c>source = printNow</c>. Defaults to the Unix epoch for determinism.</summary>
     public DateTimeOffset Now { get; init; } = DateTimeOffset.UnixEpoch;
@@ -33,28 +40,71 @@ public static class LabelResolver
 {
     public static ResolvedLabel Resolve(LabelDocument doc, ResolveContext ctx)
     {
-        var tokens = new TokenResolver(ctx.Data, doc.Bindings, doc.Tokens, ctx.DataByOrdinal);
+        var tokens = new TokenResolver(ctx.Data, doc.Bindings, doc.Tokens, ctx.DataByOrdinal,
+            ctx.ParameterValues ?? ParameterResolver.ResolveAll(doc.Parameters, ctx.LabelIndex ?? ctx.RowIndex));
+        var textTokens = ctx.ShowParameterReferences ? new TokenResolver(ctx.Data, doc.Bindings, doc.Tokens, ctx.DataByOrdinal,
+            ReferenceNames(doc.Parameters)) : tokens;
         var resolved = new List<ResolvedElement>(doc.Elements.Count);
 
         foreach (var el in doc.Elements)
         {
             if (!el.Visible) continue;
-            var r = ResolveElement(doc, el, tokens, ctx);
+            var r = ResolveElement(doc, el, tokens, textTokens, ctx);
             if (r is not null) resolved.Add(r);
         }
 
         return new ResolvedLabel(doc.Canvas, resolved);
     }
 
-    private static ResolvedElement? ResolveElement(LabelDocument doc, LabelElement el, TokenResolver tokens, ResolveContext ctx)
+    private static IReadOnlyDictionary<string,string> ReferenceNames(IEnumerable<LabelParameter>? parameters)
+    {
+        var definitions = (parameters ?? []).ToList();
+        var names = definitions.ToDictionary(p => p.Name,p => "{" + p.Name + "}",StringComparer.Ordinal);
+        foreach (var p in definitions) foreach (var alias in p.PreviousNames ?? []) names.TryAdd(alias,"{" + p.Name + "}");
+        return names;
+    }
+
+    private static ResolvedBlock ResolveBlock(LabelDocument host, BlockElement block, ResolveContext ctx)
+    {
+        if (ctx.BlockStack.Count >= 16 || ctx.BlockStack.Contains(block.BlockId))
+            throw new InvalidOperationException("Circular or excessively nested custom block: " + block.BlockId);
+        var package = ctx.BlockProvider?.Invoke(block.BlockId) ?? throw new InvalidOperationException("Custom block is unavailable: " + block.Name);
+        var parameters = ctx.ParameterValues ?? ParameterResolver.ResolveAll(host.Parameters,ctx.LabelIndex ?? ctx.RowIndex);
+        var ids = ctx.ParameterIdValues is null ? new Dictionary<string,string>() : new Dictionary<string,string>(ctx.ParameterIdValues);
+        foreach (var p in host.Parameters ?? []) if (p.Id is not null && parameters.TryGetValue(p.Name,out var value)) ids.TryAdd(p.Id,value);
+        var scoped = new Dictionary<string,string>(parameters);
+        var sourceValues = new Dictionary<string,string>();
+        foreach (var p in package.Document.Parameters ?? [])
+        {
+            string? value = null;
+            if (p.Id is not null && block.ParameterBindings.TryGetValue(p.Id,out var targetId)) ids.TryGetValue(targetId,out value);
+            if (value is null) parameters.TryGetValue(p.Name,out value);
+            if (value is null) foreach (var alias in p.PreviousNames ?? []) { if (parameters.TryGetValue(alias,out value)) break; }
+            if (value is null) continue;
+            sourceValues[p.Name] = value;
+            if (p.Id is not null) ids[p.Id] = value;
+            foreach (var alias in p.PreviousNames ?? []) scoped[alias] = value;
+        }
+        foreach (var (name,value) in sourceValues) scoped[name] = value;
+        var child = Resolve(package.Document with { Parameters = host.Parameters },ctx with
+        {
+            Assets = package.Assets, ParameterValues = scoped,ParameterIdValues = ids,
+            BlockStack = ctx.BlockStack.Append(block.BlockId).ToArray()
+        });
+        return new ResolvedBlock { Id = block.Id, XMm = block.X, YMm = block.Y, WMm = block.W, HMm = block.H,
+            RotationDeg = block.Rotation, Elements = child.Elements, SourceWidthMm = package.Document.Canvas.WidthMm, SourceHeightMm = package.Document.Canvas.HeightMm };
+    }
+
+    private static ResolvedElement? ResolveElement(LabelDocument doc, LabelElement el, TokenResolver tokens, TokenResolver textTokens, ResolveContext ctx)
     {
         var justify = el.Justify ?? new Justify();
         return el switch
         {
+            BlockElement block => ResolveBlock(doc,block,ctx),
             TextElement t => Geo(new ResolvedText
             {
                 Id = el.Id,
-                Text = tokens.Substitute(t.Props.Content),
+                Text = textTokens.Substitute(t.Props.Content),
                 Style = BuildStyle(doc, el, t.Props.FontFamily, t.Props.FontSizePt, t.Props.Bold, t.Props.Italic, t.Props.Underline, t.Props.LineSpacing, t.Props.LetterSpacing),
                 Wrap = t.Props.Wrap,
                 FontSizing = t.Props.FontSizing,
@@ -89,6 +139,7 @@ public static class LabelResolver
                 TextSizePt = q.Props.TextSizePt,
                 TextBold = q.Props.TextBold,
                 TextItalic = q.Props.TextItalic,
+                TextUnderline = q.Props.TextUnderline,
                 TextAlignment = q.Props.TextAlignment,
                 TextWrap = q.Props.TextWrap,
                 TextLetterSpacing = q.Props.TextLetterSpacing,
@@ -150,7 +201,7 @@ public static class LabelResolver
                 Rows = tab.Props.Rows,
                 ColumnWidthsMm = tab.Props.ColumnWidthsMm,
                 RowHeightsMm = tab.Props.RowHeightsMm,
-                Cells = ResolveCells(tab.Props, tokens, BuildStyle(doc, el, null, null, null, null, null, null, 0)),
+                Cells = ResolveCells(tab.Props, textTokens, BuildStyle(doc, el, null, null, null, null, null, null, 0)),
                 BorderWidthMm = tab.Props.BorderWidthMm,
                 HeaderRow = tab.Props.HeaderRow,
                 HeaderColumn = tab.Props.HeaderColumn,
@@ -235,12 +286,14 @@ public static class LabelResolver
                 var cj = new Justify { H = src?.Justify?.H ?? "center", V = src?.Justify?.V ?? "middle" };
                 result[r][c] = new ResolvedCell(tokens.Substitute(src?.Content ?? ""), cj)
                 {
+                    Borders = src?.Borders,
                     FillPercent = fill,
                     TextWhite = textWhite,
                     FontFamily = src?.FontFamily ?? def.FontFamily,
                     FontSizePt = src?.FontSizePt ?? def.FontSizePt,
                     Bold = bold ?? def.Bold,
                     Italic = src?.Italic ?? def.Italic,
+                    Underline = src?.Underline ?? def.Underline,
                     ColSpan = cs,
                     RowSpan = rs,
                     Covered = covered[r, c],

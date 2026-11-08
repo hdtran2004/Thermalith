@@ -10,6 +10,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/Niimbot.Net.Tests/Niimbot.Net.Tests.csproj" />
     <Project Path="tests/Thermalith.Core.Tests/Thermalith.Core.Tests.csproj" />
+    <Project Path="tests/Thermalith.App.Tests/Thermalith.App.Tests.csproj" />
     <Project Path="tests/Thermalith.Server.Tests/Thermalith.Server.Tests.csproj" />
   </Folder>
 

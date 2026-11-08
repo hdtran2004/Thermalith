@@ -12,6 +12,7 @@ namespace Thermalith.Core.Model;
 /// <summary>Root of a label template (serialized to <c>label.json</c> inside a <c>.nlbl</c> package, §6.6).</summary>
 public sealed record LabelDocument
 {
+    public string? CustomBlockId { get; init; }
     public string SchemaVersion { get; init; } = "1.0";
     public required LabelMetadata Metadata { get; init; }
     public required Canvas Canvas { get; init; }
@@ -21,6 +22,7 @@ public sealed record LabelDocument
 
     /// <summary>The declared data contract — tokens this template expects (§8).</summary>
     public List<TokenDecl>? Tokens { get; init; }
+    public List<LabelParameter>? Parameters { get; init; }
 
     /// <summary>Live data-source binding — connection details only, never credentials (§9).</summary>
     public DataSource? DataSource { get; init; }
@@ -53,6 +55,9 @@ public sealed record Canvas
 
     /// <summary>Dots per inch, seeded from the printer profile. Renderer reads this — never assume 8 (§6.3.1).</summary>
     public int Dpi { get; init; } = 203;
+
+    public string? StockName { get; init; }
+    public Thermalith.Core.Catalog.RollDefinition? Stock { get; init; }
 
     public string Shape { get; init; } = "rectangle"; // rectangle | rounded | circle | dieCut
     public double CornerRadiusMm { get; init; }

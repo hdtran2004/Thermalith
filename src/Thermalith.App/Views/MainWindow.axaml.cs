@@ -19,18 +19,96 @@ namespace Thermalith.App.Views;
 public partial class MainWindow : Window, IFilePicker, IDialogService
 {
     private bool _allowClose;
+    private readonly DispatcherTimer _blockRefresh = new() { Interval = TimeSpan.FromSeconds(2) };
+    private string _blockSignature = "";
+    private async void OnCustomBlocks(object? sender, RoutedEventArgs e)
+    {
+        try { if (Vm is { } vm) await new CollectionsDialog(vm,true,true).ShowDialog(this); }
+        catch (Exception ex) { await MessageAsync("Custom blocks",ex.Message); }
+    }
+    private async void OnManageCustomBlocks(object? sender,RoutedEventArgs e)
+    {
+        try { if (Vm is { } vm) await new CollectionsDialog(vm,true).ShowDialog(this); }
+        catch (Exception ex) { await MessageAsync("Custom blocks",ex.Message); }
+    }
+    private async void OnCollections(object? sender, RoutedEventArgs e)
+    {
+        try { if (DataContext is MainWindowViewModel vm) await new CollectionsDialog(vm).ShowDialog(this); }
+        catch (Exception ex) { await MessageAsync("Collections", ex.Message); }
+    }
 
     public MainWindow()
     {
         InitializeComponent();
         Loaded += OnWindowLoaded;
         Closing += OnWindowClosing;
+        _blockRefresh.Tick += (_,_) =>
+        {
+            try
+            {
+                var signature = BlockLibrary.Shared.Signature();
+                if (signature != _blockSignature && Vm is { } vm && !vm.Printer.IsPrinting && !vm.Editor.IsEditingBlock && !vm.Editor.IsCellEditing && !vm.Editor.IsPrimaryEditing && FocusManager?.GetFocusedElement() is not TextBox)
+                { _blockSignature = signature; vm.Editor.RefreshLinkedBlocks(); }
+            }
+            catch (Exception ex) { if (Vm is { } vm) vm.StatusMessage = "Block refresh: " + ex.Message; }
+        };
+        Opened += (_,_) => _blockRefresh.Start(); Closed += (_,_) => _blockRefresh.Stop();
+        AddHandler(KeyDownEvent, (_,e) =>
+        {
+            if (Vm?.Editor.IsBlockReadOnly == true && (e.Key is Key.Delete or Key.Back or Key.Return || (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key is Key.X or Key.V or Key.Z or Key.Y or Key.D))) e.Handled = true;
+        }, RoutingStrategies.Tunnel);
         // Track the last focused text field so Data Merge ▸ Columns can insert a token at its caret even
         // after opening the menu steals keyboard focus (#7).
         AddHandler(InputElement.GotFocusEvent, OnAnyGotFocus, RoutingStrategies.Bubble);
         AddHandler(InputElement.PointerReleasedEvent, OnCopiesPointerReleased, RoutingStrategies.Tunnel, handledEventsToo: true);
     }
 
+    private async void OnPrintPreview(object? sender, RoutedEventArgs e)
+    {
+        if (Vm is not { } vm) return;
+        try
+        {
+            var shouldPrint = await new PrintPreviewDialog(vm.Editor, vm.Printer.Copies, vm.Printer.PrintCommand.CanExecute(null)).ShowDialog<bool>(this);
+            if (shouldPrint && vm.Printer.PrintCommand.CanExecute(null)) await vm.Printer.PrintCommand.ExecuteAsync(null);
+        }
+        catch (Exception ex) { await MessageAsync("Print preview", ex.Message); }
+    }
+    private async void OnManageParameters(object? sender, RoutedEventArgs e)
+    {
+        if (Vm is not { } vm) return;
+        try
+        {
+
+        if (vm.Editor.IsBlockReadOnly) return;
+        var dialog = new ParametersDialog(vm.Editor.IsEditingBlock ? vm.Editor.BlockDefaultParameters : vm.Editor.Parameters, vm.Editor.IsEditingBlock || vm.Editor.IsBlockSource ? null : vm.Editor.InheritedParameterNames);
+        if (vm.Editor.IsEditingBlock) dialog.Title = "Custom block parameter defaults (design values are preserved)";
+        var result = await dialog.ShowDialog<List<Thermalith.Core.Model.LabelParameter>?>(this);
+        if (result is not null)
+        {
+            if (vm.Editor.IsEditingBlock) vm.Editor.SetBlockDefaults(result); else vm.Editor.SetParameters(result);
+        }
+        }
+        catch (Exception ex) { await MessageAsync("Parameter changes",ex.Message); }
+    }
+
+    private void OnParametersOpened(object? sender, RoutedEventArgs e)
+    {
+        if (!ReferenceEquals(e.Source, sender)) return;
+        var items = new List<MenuItem>();
+        if (Vm is { } vm)
+            foreach (var parameter in vm.Editor.Parameters)
+            {
+                var token = "{" + parameter.Name + "}";
+                string value;
+                try { value = Thermalith.Core.Tokens.ParameterResolver.ResolveAll(vm.Editor.Parameters)[parameter.Name]; }
+                catch (FormatException ex) { value = ex.Message; }
+                var item = new MenuItem { Header = token + "    " + value };
+                item.Click += (_, _) => InsertTokenAtCaret(token);
+                items.Add(item);
+            }
+        if (items.Count == 0) items.Add(new MenuItem { Header = "(define a parameter first)", IsEnabled = false });
+        MiParameterReferences.ItemsSource = items;
+    }
     private bool _refreshingFontMenu;
 
     private void OnFontDropDownOpened(object? sender, EventArgs e)
@@ -98,6 +176,14 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
     {
         if (Vm is not { } vm) return;
 
+        Avalonia.Media.RenderOptions.SetBitmapInterpolationMode(LabelPreviewImage, vm.Editor.PreviewInterpolationMode);
+        vm.Editor.PropertyChanged += (_, change) =>
+        {
+            if (change.PropertyName == nameof(EditorViewModel.SmoothPreview))
+                Avalonia.Media.RenderOptions.SetBitmapInterpolationMode(LabelPreviewImage, vm.Editor.PreviewInterpolationMode);
+        };
+        vm.Editor.PreviewDisplayScale = RenderScaling;
+        PropertyChanged += (_, change) => { if (change.Property.Name == nameof(RenderScaling)) vm.Editor.PreviewDisplayScale = RenderScaling; };
         vm.FilePicker = this;
         vm.Dialogs = this;
         vm.Printer.ConfirmLargeCopyCountAsync = ConfirmLargeCopyCountAsync;
@@ -127,6 +213,7 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
         vm.RecentFiles.CollectionChanged += (_, _) => BuildRecentMenu(vm);
 
         // Keep the rulers aligned with the label as it scrolls, zooms, or the viewport resizes.
+        CanvasScroll.AddHandler(InputElement.PointerWheelChangedEvent, OnWorkspaceZoomWheel, RoutingStrategies.Tunnel);
         CanvasScroll.ScrollChanged += (_, _) => UpdateRulers();
         CanvasHost.LayoutUpdated += (_, _) => UpdateRulers();
 
@@ -188,10 +275,10 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
             if (Vm is not { } vm) return;
 
             // Guard unsaved work: cancel the close, confirm, then close for real.
-            if (!_allowClose && vm.Editor.Dirty)
+            if (!_allowClose && (vm.Editor.Dirty || vm.Editor.IsEditingBlock))
             {
                 e.Cancel = true;
-                if (await ConfirmDiscardAsync())
+                if (await vm.EnsureDiscardableAsync())
                 {
                     _allowClose = true;
                     Close();
@@ -221,7 +308,15 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
         return true;
     }
 
-    public Task<bool> ConfirmDiscardAsync() => new ConfirmDialog().ShowDialog<bool>(this);
+    public async Task<bool> ConfirmDiscardAsync()
+    {
+        var choice = await new ConfirmDialog().ShowDialog<UnsavedChangesChoice>(this);
+        if (choice == UnsavedChangesChoice.Discard) return true;
+        if (choice != UnsavedChangesChoice.Save || Vm is not { } vm) return false;
+        await vm.SaveCommand.ExecuteAsync(null);
+        // A cancelled Save As or failed write must leave the document open.
+        return !vm.Editor.Dirty;
+    }
 
     public Task ShowAboutAsync() => new AboutDialog().ShowDialog(this);
 
@@ -229,6 +324,15 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
         new RollDialog { DataContext = new ViewModels.RollDialogViewModel(seed, title) }
             .ShowDialog<Thermalith.Core.Catalog.RollDefinition?>(this);
 
+    public async Task<NewLabelSetup?> CreateLabelAsync(Thermalith.Core.Catalog.RollDefinition seed)
+    {
+        var model = new ViewModels.RollDialogViewModel(seed, "New label design") { IsNewDesign = true };
+        var catalog = new Thermalith.App.Services.LabelRollStore().Catalog;
+        model.LoadStocks(catalog.Rolls.Concat(catalog.LastUsed is { } last && !catalog.Rolls.Contains(last) ? new[] { last } : Array.Empty<Thermalith.Core.Catalog.RollDefinition>()));
+        model.Name = ""; model.PartName = "";
+        var stock = await new RollDialog { DataContext = model }.ShowDialog<Thermalith.Core.Catalog.RollDefinition?>(this);
+        return stock is null ? null : new NewLabelSetup(string.IsNullOrWhiteSpace(model.DesignName) ? "Untitled" : model.DesignName.Trim(), stock, model.Layout);
+    }
     // ── Canvas interaction: select, drag-move, resize, marquee (§7) ──────────────────────────────
 
     private bool _dragging;
@@ -244,7 +348,7 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
         if (Vm is not { } vm || sender is not Control host) return;
         var p = e.GetPosition(host);
         var ed = vm.Editor;
-        if (ed.InCellMode) { ed.CellPointerDown(p.X, p.Y); ed.BeginCellEdit(); FocusCellEditor(); e.Handled = true; return; }
+        if (ed.InCellMode && ed.CellPointerDown(p.X, p.Y)) { ed.BeginCellEdit(); FocusCellEditor(); e.Handled = true; return; }
         if (ed.TryEnterCellMode(p.X, p.Y)) { ed.BeginCellEdit(); FocusCellEditor(); e.Handled = true; return; }
         // Not a table: select what's under the cursor and open its primary editor (Text/Barcode/QR).
         ed.SelectAt(p.X, p.Y, false);
@@ -322,7 +426,7 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
     {
         if (Vm?.Editor is { } ed)
         {
-            if (ed.InCellMode && !ed.IsCellEditing)
+if (ed.InCellMode && !ed.IsCellEditing)
             {
                 var shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
                 switch (e.Key)
@@ -455,7 +559,7 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
         }
         if (_dragging)
         {
-            vm.Editor.DragTo(p.X - _pressPoint.X, p.Y - _pressPoint.Y);
+            vm.Editor.DragTo(p.X - _pressPoint.X, p.Y - _pressPoint.Y, e.KeyModifiers.HasFlag(KeyModifiers.Alt));
             return;
         }
         if (_marquee)
@@ -522,8 +626,15 @@ public partial class MainWindow : Window, IFilePicker, IDialogService
         if (Vm is { } vm && !CanvasHost.IsPointerOver) vm.Editor.DeselectAll();
     }
 
+    private void OnWorkspaceZoomWheel(object? sender, PointerWheelEventArgs e)
+    {
+        if (!e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.Delta.Y == 0 || Vm is not { } vm) return;
+        vm.Editor.Zoom = Math.Clamp(vm.Editor.Zoom * Math.Pow(1.25,e.Delta.Y),0.25,12);
+        e.Handled = true;
+    }
     private void OnCanvasWheel(object? sender, PointerWheelEventArgs e)
     {
+        if (e.Handled) return;
         if (Vm is not { } vm) return;
         var ed = vm.Editor;
         var zoomOnly = e.KeyModifiers.HasFlag(KeyModifiers.Control);

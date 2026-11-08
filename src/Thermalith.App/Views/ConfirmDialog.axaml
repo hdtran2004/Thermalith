@@ -2,15 +2,16 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="Thermalith.App.Views.ConfirmDialog"
         Title="Unsaved changes"
-        Width="380" SizeToContent="Height"
+        Width="420" SizeToContent="Height"
         CanResize="False"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False">
     <StackPanel Margin="20" Spacing="16">
-        <TextBlock Text="You have unsaved changes. Discard them?" TextWrapping="Wrap" />
+        <TextBlock Text="Save your changes before continuing?" TextWrapping="Wrap" />
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
-            <Button Content="Cancel" Click="OnCancel" MinWidth="80" />
-            <Button Content="Discard" Click="OnDiscard" MinWidth="80" IsDefault="False" />
+            <Button Content="Cancel" Click="OnCancel" MinWidth="80" IsCancel="True" />
+            <Button Content="Discard" Click="OnDiscard" MinWidth="80" />
+            <Button Content="Save" Click="OnSave" MinWidth="80" IsDefault="True" Classes="accent" />
         </StackPanel>
     </StackPanel>
 </Window>

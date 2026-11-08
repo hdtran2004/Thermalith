@@ -6,7 +6,8 @@ public static class TableCellFormatting
     public static TableCell Apply(TableCell source, TableCell target) => target with
     {
         FontFamily = source.FontFamily, FontSizePt = source.FontSizePt,
-        Bold = source.Bold, Italic = source.Italic, Justify = source.Justify,
+        Bold = source.Bold, Italic = source.Italic, Underline = source.Underline, Justify = source.Justify,
+        Borders = source.Borders,
         Fill = source.Fill, TextColor = source.TextColor,
     };
 }

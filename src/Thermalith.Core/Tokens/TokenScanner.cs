@@ -10,8 +10,6 @@ namespace Thermalith.Core.Tokens;
 /// </summary>
 public static partial class TokenScanner
 {
-    [GeneratedRegex(@"\{([A-Za-z_][A-Za-z0-9_]*)\}")]
-    private static partial Regex TokenPattern();
 
     /// <summary>Distinct token names referenced anywhere in the document, in first-seen order.</summary>
     public static IReadOnlyList<string> Scan(LabelDocument doc)
@@ -22,17 +20,18 @@ public static partial class TokenScanner
         void Add(string? content)
         {
             if (string.IsNullOrEmpty(content)) return;
-            foreach (Match m in TokenPattern().Matches(content))
-            {
-                var name = m.Groups[1].Value;
+            foreach (var name in TokenResolver.ReferencedNames(content))
                 if (set.Add(name)) seen.Add(name);
-            }
+
         }
 
         foreach (var el in doc.Elements)
         {
             switch (el)
             {
+                case BlockElement block:
+                    foreach (var name in block.ParameterNames) if (set.Add(name)) seen.Add(name);
+                    break;
                 case TextElement t: Add(t.Props.Content); break;
                 case BarcodeElement b: Add(b.Props.Value); break;
                 case QrElement q: Add(q.Props.Value); break;

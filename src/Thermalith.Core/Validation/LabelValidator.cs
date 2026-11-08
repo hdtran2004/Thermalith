@@ -61,11 +61,18 @@ public sealed class LabelValidator : ILabelValidator
     {
         var declared = (doc.Tokens ?? []).ToDictionary(t => t.Name, StringComparer.Ordinal);
         var scanned = TokenScanner.Scan(doc);
-        var resolver = new TokenResolver(ctx.Data, doc.Bindings, doc.Tokens);
+        IReadOnlyDictionary<string, string> parameters;
+        try { parameters = ParameterResolver.ResolveAll(doc.Parameters); }
+        catch (FormatException ex)
+        {
+            diags.Add(new ValidationDiagnostic("invalid-parameter-reference", ValidationSeverity.Error, ex.Message, "$.parameters"));
+            return;
+        }
+        var resolver = new TokenResolver(ctx.Data, doc.Bindings, doc.Tokens, parameters: parameters);
 
         foreach (var name in scanned)
         {
-            if (!declared.ContainsKey(name))
+            if (!declared.ContainsKey(name) && !(parameters?.ContainsKey(name) ?? false))
                 diags.Add(new ValidationDiagnostic(ValidationCodes.UndeclaredToken, ValidationSeverity.Warning,
                     $"Token '{{{name}}}' is referenced but not declared in tokens[].", "$.tokens"));
         }

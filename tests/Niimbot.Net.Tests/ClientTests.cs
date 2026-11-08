@@ -1,4 +1,4 @@
-using Niimbot.Net;
+﻿using Niimbot.Net;
 using Niimbot.Net.Commands;
 using Niimbot.Net.Encoding;
 using Niimbot.Net.Framing;
@@ -15,6 +15,107 @@ public class ClientTests
         var printer = new FakeB1Printer();
         var transport = new FakeTransport { Responder = printer.Respond };
         return (new NiimbotClient(transport), transport, printer);
+    }
+
+    [Theory]
+    [InlineData(6400)]
+    [InlineData(4608)]
+    public async Task M2H_and_M3_identical_copies_use_one_job_and_one_upload(int modelId)
+    {
+        var printer = new FakeB1Printer { ModelId = modelId };
+        var transport = new FakeTransport { Responder = printer.Respond };
+        await using var client = new NiimbotClient(transport);
+        await client.ConnectAsync();
+        await client.PrintAsync(new MonochromeBitmap(8,2,[0xFF,0]),new PrintOptions { Copies = 2 });
+        var starts = transport.WrittenPackets.Where(p => p.Command == (byte)RequestCommandId.PrintStart).ToArray();
+        Assert.Single(starts); Assert.Equal(2, starts[0].Data[1]);
+        Assert.Equal(modelId == 4608 ? 8 : 9, starts[0].Data.Length);
+        Assert.Single(transport.WrittenPackets, p => p.Command == (byte)RequestCommandId.PrintEnd);
+        var pages = transport.WrittenPackets.Where(p => p.Command == (byte)RequestCommandId.SetPageSize).ToArray();
+        Assert.Single(pages); Assert.Equal(2, pages[0].Data[5]);
+        Assert.Equal(modelId == 4608 ? 6 : 45, pages[0].Data.Length);
+    }
+
+    [Theory]
+    [InlineData(RequestCommandId.SetDensity, ResponseCommandId.In_SetDensity)]
+    [InlineData(RequestCommandId.SetLabelType, ResponseCommandId.In_SetLabelType)]
+    [InlineData(RequestCommandId.PrintStart, ResponseCommandId.In_PrintStart)]
+    public async Task M2H_waits_for_explicitly_rejected_setup_before_opening_second_page(RequestCommandId command, ResponseCommandId response)
+    {
+        var printer = new FakeB1Printer { ModelId = 4608 };
+        var attempts = 0;
+        var transport = new FakeTransport { Responder = packet =>
+            packet.Command == (byte)command && ++attempts == 1
+                ? new[] { new NiimbotPacket((byte)response, new byte[] { 0 }) }
+                : printer.Respond(packet) };
+        await using var client = new NiimbotClient(transport);
+        await client.ConnectAsync();
+        await client.PrintAsync(new MonochromeBitmap(8,2,[255,0]), new PrintOptions { Copies = 2 });
+        Assert.Equal(2, attempts);
+        Assert.Single(transport.WrittenPackets, p => p.Command == (byte)RequestCommandId.PageStart);
+        Assert.Single(transport.WrittenPackets, p => p.Command == (byte)RequestCommandId.PrintEnd);
+        var commands = transport.WrittenPackets.Where(p => p.Command == (byte)command).ToArray();
+        Assert.Equal(commands[0].Data, commands[1].Data);
+    }
+
+    [Theory]
+    [InlineData(4608)]
+    [InlineData(6400)]
+    public async Task Distinct_labels_share_job_and_confirm_each_counter_once(int modelId)
+    {
+        var printer = new FakeB1Printer { ModelId = modelId };
+        var transport = new FakeTransport { Responder = printer.Respond };
+        await using var client = new NiimbotClient(transport); await client.ConnectAsync();
+        var confirmed = 0;
+        await client.PrintContinuousAsync(3, i => new MonochromeBitmap(8,1,[(byte)(128 >> i)]),
+            labelCompleted: () => confirmed++);
+        Assert.Equal(3, confirmed);
+        Assert.Single(transport.WrittenPackets, p => p.Command == (byte)RequestCommandId.PrintStart);
+        Assert.Equal(3, transport.WrittenPackets.Count(p => p.Command == (byte)RequestCommandId.SetPageSize));
+        Assert.Equal(3, transport.WrittenPackets.Count(p => p.Command == (byte)RequestCommandId.PageEnd));
+        Assert.Equal(modelId == 4608 ? 3 : 0, transport.WrittenPackets.Count(p => p.Command == (byte)RequestCommandId.PageStart));
+        Assert.Equal((byte)RequestCommandId.PrintEnd, transport.WrittenPackets[^1].Command);
+        Assert.Single(transport.WrittenPackets, p => p.Command == (byte)RequestCommandId.PrintEnd);
+    }
+
+    [Fact]
+    public async Task Failed_second_page_preserves_only_confirmed_first_label_and_does_not_retry()
+    {
+        var printer = new FakeB1Printer { ModelId = 4608 }; var pages = 0; var completed = 0;
+        var transport = new FakeTransport { Responder = p => p.Command == (byte)RequestCommandId.PageStart && ++pages == 2
+            ? new[] { new NiimbotPacket((byte)ResponseCommandId.In_PrintError, new byte[] { 6 }) } : printer.Respond(p) };
+        await using var client = new NiimbotClient(transport); await client.ConnectAsync();
+        await Assert.ThrowsAsync<PrintException>(() => client.PrintContinuousAsync(3,
+            _ => new MonochromeBitmap(8,1,[255]), labelCompleted: () => completed++));
+        Assert.Equal(1, completed);
+        Assert.Equal(2, pages);
+        Assert.DoesNotContain(transport.WrittenPackets, p => p.Command == (byte)RequestCommandId.PrintEnd);
+    }
+
+    [Fact]
+    public async Task Batch_cancellation_stops_queuing_and_explicit_cleanup_ends_once()
+    {
+        var printer = new FakeB1Printer { ModelId = 4608 };
+        var transport = new FakeTransport { Responder = printer.Respond };
+        await using var client = new NiimbotClient(transport); await client.ConnectAsync();
+        using var cancellation = new CancellationTokenSource();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.PrintContinuousAsync(3,
+            _ => new MonochromeBitmap(8,1,[255]), labelCompleted: () => cancellation.Cancel(), ct: cancellation.Token));
+        await client.EndPrintJobAsync();
+        Assert.Single(transport.WrittenPackets, p => p.Command == (byte)RequestCommandId.SetPageSize);
+        Assert.Single(transport.WrittenPackets, p => p.Command == (byte)RequestCommandId.PrintEnd);
+    }
+
+    [Fact]
+    public async Task M2H_copy_failure_stops_without_retry_and_identifies_the_label_and_command()
+    {
+        var printer = new FakeB1Printer { ModelId = 4608 }; var pages = 0;
+        var transport = new FakeTransport { Responder = p => p.Command == (byte)RequestCommandId.PageStart && ++pages == 2
+            ? new[] { new NiimbotPacket((byte)ResponseCommandId.In_PrintError,new byte[] { 6 }) } : printer.Respond(p) };
+        await using var client = new NiimbotClient(transport); await client.ConnectAsync();
+        var error = await Assert.ThrowsAsync<PrintException>(() => client.PrintContinuousAsync(3, _ => new MonochromeBitmap(8,2,[255,0])));
+        Assert.Equal(PrinterErrorCode.DataError,error.Code); Assert.Contains("PageStart",error.Message);
+        Assert.Single(transport.WrittenPackets, p => p.Command == (byte)RequestCommandId.PrintStart);
     }
 
     [Fact]

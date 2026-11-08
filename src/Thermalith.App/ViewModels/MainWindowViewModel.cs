@@ -36,6 +36,7 @@ public partial class MainWindowViewModel : ViewModelBase
         Editor = new EditorViewModel();
         Printer = new PrinterViewModel(Editor);
         Printer.ConfirmLoadedLabelAsync = ConfirmLoadedLabelAsync;
+        Printer.ConfirmParameterSequenceAsync = async summary => Dialogs is not null && await Dialogs.ConfirmAsync("Confirm print quantity and values", summary, "Print");
         DataMerge = new DataMergeViewModel(Editor, Printer, s => StatusMessage = s);
         RecentFiles = new ObservableCollection<string>(_settings.RecentFiles);
 
@@ -181,21 +182,26 @@ public partial class MainWindowViewModel : ViewModelBase
         var last = _rollStore.LastUsed;
         var seed = new RollDefinition
         {
-            Name = "Untitled",
+            Name = last?.Name ?? "",
             PaperType = last?.PaperType ?? "gap",
             WidthMm = last?.WidthMm ?? 50,
             HeightMm = last?.HeightMm ?? 30,
             Shape = last?.Shape ?? "rectangle",
+            CornerRadiusMm = last?.CornerRadiusMm,
             Density = last?.Density,
         };
-        var def = Dialogs is null ? seed : await Dialogs.DefineRollAsync(seed, "New label");
-        if (def is null) return; // cancelled
-
-        Editor.NewDocument();
-        Editor.ApplyRoll(def.WidthMm, def.HeightMm, def.Shape, Printer.ConnectedDpi, Printer.ConnectedPrintableWidthMm, def.EffectiveCornerRadiusMm);
+        var setup = Dialogs is null ? new NewLabelSetup("Untitled", seed) : await Dialogs.CreateLabelAsync(seed);
+        if (setup is null) return;
+        var def = setup.Stock;
+        _rollStore.Remember(def);
+        Editor.NewDocument(setup.DesignName);
+        var w = setup.Layout == "Portrait" ? Math.Min(def.WidthMm, def.HeightMm) : Math.Max(def.WidthMm, def.HeightMm);
+        var h = setup.Layout == "Portrait" ? Math.Max(def.WidthMm, def.HeightMm) : Math.Min(def.WidthMm, def.HeightMm);
+        Editor.ApplyRoll(w, h, def.Shape, Printer.ConnectedDpi, Printer.ConnectedPrintableWidthMm, def.EffectiveCornerRadiusMm, def.Name);
+        Editor.SetDesignStock(def);
         AutoOrientForSideFed();
         Printer.ApplyPaperType(def.PaperType);
-        _rollStore.Remember(def);
+        Editor.CompleteNewDocumentSetup();
         RememberCanvas();
     }
 
@@ -206,7 +212,7 @@ public partial class MainWindowViewModel : ViewModelBase
     /// orientation wins. The caller persists via <see cref="RememberCanvas"/>.</summary>
     private void AutoOrientForSideFed()
     {
-        if (Printer.ConnectedPrintDirection == Niimbot.Net.Profiles.PrintDirection.Left
+        if (!Editor.IsBlockReadOnly && Printer.ConnectedPrintDirection == Niimbot.Net.Profiles.PrintDirection.Left
             && !Editor.HasElements
             && Editor.OrientationDeg == 0)
             Editor.RotateLeft();
@@ -306,18 +312,37 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         // Canvas = label model: a roll only sizes the canvas for a *fresh* (empty) doc. If the user has
         // a design, preserve their size and just target the printer (printhead width + dpi) + paper type.
-        if (Editor.HasElements)
-            Editor.SetPrinterTarget(Printer.ConnectedPrintableWidthMm, Printer.ConnectedDpi, roll.Shape, roll.EffectiveCornerRadiusMm);
+        if (Editor.HasElements || !string.IsNullOrWhiteSpace(Editor.DesignStockName))
+            Editor.SetPrinterTarget(Printer.ConnectedPrintableWidthMm, Printer.ConnectedDpi);
         else
-            Editor.ApplyRoll(roll.WidthMm, roll.HeightMm, roll.Shape, Printer.ConnectedDpi, Printer.ConnectedPrintableWidthMm, roll.EffectiveCornerRadiusMm);
+            Editor.ApplyRoll(roll.WidthMm, roll.HeightMm, roll.Shape, Printer.ConnectedDpi, Printer.ConnectedPrintableWidthMm, roll.EffectiveCornerRadiusMm, roll.Name);
         AutoOrientForSideFed();
         Printer.ApplyPaperType(roll.PaperType);
         RememberCanvas();
         return Editor.HasPrintableMargin; // a printable margin exists (label wider than the head)
     }
 
+    [RelayCommand]
+    private async Task EditDesignStockAsync()
+    {
+        if (Dialogs is null) return;
+        var seed = Editor.DesignStock ?? _rollStore.Catalog.Rolls.FirstOrDefault(s => s.Name == Editor.DesignStockName);
+        if (seed is null)
+        {
+            await Dialogs.MessageAsync("Edit design stock", "Select a saved stock first."); return;
+        }
+        var edited = await Dialogs.DefineRollAsync(seed, "Edit design stock");
+        if (edited is null) return;
+        _rollStore.Replace(seed,edited);
+        Editor.UpdateDesignStock(edited);
+        if (_matchedRoll is not null && !string.IsNullOrEmpty(edited.Barcode) && _matchedRoll.Barcode == edited.Barcode)
+            SetMatchedRoll(edited);
+        StatusMessage = "Updated design stock: " + edited.Name;
+    }
+
     private async Task<bool> ConfirmLoadedLabelAsync()
     {
+        if (Editor.IsEditingBlock) { StatusMessage = "Finish editing the shared block before printing."; return false; }
         var issues = new List<string>();
         RollDefinition? roll = null;
         Niimbot.Net.Commands.RfidInfo? tag = null;
@@ -330,15 +355,32 @@ public partial class MainWindowViewModel : ViewModelBase
         catch { issues.Add("The printer's loaded roll could not be read."); }
 
         var (width, height, _, _, _, _, orientation) = Editor.CurrentCanvas();
+        var sizeMatches = roll is not null && StockCompatibility.SizeMatches(width, height, orientation, roll);
         if (orientation is 90 or 270) (width, height) = (height, width);
         if (roll is not null)
         {
-            if (Math.Abs(roll.WidthMm - width) > 0.1 || Math.Abs(roll.HeightMm - height) > 0.1)
-                issues.Add($"Loaded roll: {roll.Name} ({roll.WidthMm:0.##} × {roll.HeightMm:0.##} mm).\nDesign: {width:0.##} × {height:0.##} mm.");
+            if (!sizeMatches)
+            {
+                var message = $"Printing is blocked because the label sizes differ.\n\nDesign: {width:0.##} x {height:0.##} mm.\nLoaded roll: {roll.Name} ({roll.WidthMm:0.##} x {roll.HeightMm:0.##} mm).\n\nLoad matching labels or select the correct stock for this design.";
+                StatusMessage = message;
+                if (Dialogs is not null) await Dialogs.MessageAsync("Label size mismatch", message);
+                return false;
+            }
         }
         else if (tag is { TagPresent: true })
             issues.Add("This roll has no saved definition, so its dimensions cannot be verified. Use Change labels to define it.");
 
+        var stock = Editor.DesignStock;
+        if (roll is not null && stock is not null &&
+            ((!string.IsNullOrEmpty(stock.Barcode) && stock.Barcode != roll.Barcode) ||
+             !string.Equals(stock.Name, roll.Name, StringComparison.OrdinalIgnoreCase) ||
+             stock.PaperType != roll.PaperType || stock.Shape != roll.Shape ||
+             Math.Abs(stock.EffectiveCornerRadiusMm - roll.EffectiveCornerRadiusMm) > 0.1))
+            issues.Add($"Design stock: {stock.Name} ({stock.PaperType}).\nLoaded stock: {roll.Name} ({roll.PaperType}).");
+        else if (roll is not null && stock is null && !string.IsNullOrWhiteSpace(Editor.DesignStockName) &&
+                 !string.Equals(Editor.DesignStockName, roll.Name, StringComparison.OrdinalIgnoreCase))
+            issues.Add($"Design stock: {Editor.DesignStockName}. Loaded stock: {roll.Name}.");
+        if (roll is not null && !Printer.AllowMediaOverride) Printer.ApplyPaperType(roll.PaperType);
         var expectedType = Printer.SelectedLabelType ?? LabelType.WithGaps;
         if (roll is not null)
         {
@@ -387,6 +429,11 @@ public partial class MainWindowViewModel : ViewModelBase
     /// <summary>True if it's safe to replace the current document (not dirty, or the user confirms discard).</summary>
     public async Task<bool> EnsureDiscardableAsync()
     {
+        if (Editor.IsEditingBlock)
+        {
+            if (Editor.Dirty && (Dialogs is null || !await Dialogs.ConfirmDiscardAsync())) return false;
+            if (Editor.IsEditingBlock) Editor.CancelBlockEdit();
+        }
         if (!Editor.Dirty) return true;
         return Dialogs is not null && await Dialogs.ConfirmDiscardAsync();
     }
@@ -397,6 +444,7 @@ public partial class MainWindowViewModel : ViewModelBase
         {
             var package = LabelPackageIo.Load(path);
             Editor.LoadPackage(package, path);
+            BlockLibrary.Shared.Register(path,package.Document);
             AddRecent(path);
             StatusMessage = $"Opened {Path.GetFileName(path)}";
         }
@@ -406,9 +454,10 @@ public partial class MainWindowViewModel : ViewModelBase
         }
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanSave))]
     private async Task SaveAsync()
     {
+        if (Editor.IsEditingBlock) { await SaveBlockChangesAsync(); return; }
         if (Editor.FilePath is { } path) Save(path);
         else await SaveAsAsync();
     }
@@ -416,6 +465,11 @@ public partial class MainWindowViewModel : ViewModelBase
     [RelayCommand]
     private async Task SaveAsAsync()
     {
+        if (Editor.IsEditingBlock || Editor.IsBlockSource)
+        {
+            if (Dialogs is not null) await Dialogs.MessageAsync("Custom block","Use Save to update the shared block, or Save as custom block to create a separate library block.");
+            return;
+        }
         if (FilePicker is null) return;
         var suggested = Editor.DocumentName is { Length: > 0 } n ? n : "label";
         var path = await FilePicker.SaveLabelAsync(suggested);
@@ -428,6 +482,17 @@ public partial class MainWindowViewModel : ViewModelBase
         try
         {
             Editor.SaveTo(path);
+            try
+            {
+                var collections = new CollectionStore();
+                var entry = collections.Catalog.Labels.FirstOrDefault(l => string.Equals(l.Path, Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase));
+                if (entry is not null)
+                {
+                    using var thumbnail = Editor.RenderPrintPreview(0,false,applyOrientation: false);
+                    collections.Cache(entry, stream => thumbnail.Save(stream));
+                }
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("Collection thumbnail refresh failed: " + ex.Message); }
             AddRecent(path);
             RememberCanvas(); // capture this label's canvas (incl. safe margin) as the default for new labels
             StatusMessage = $"Saved {Path.GetFileName(path)}";
@@ -470,31 +535,37 @@ public partial class MainWindowViewModel : ViewModelBase
         }
     }
 
-    private bool CanPaste() => Editor.HasClipboard;
-    private bool CanUngroup() => Editor.HasGroupInSelection;
-    private bool CanGroup() => Editor.SelectionCount >= 2;
-    [RelayCommand] private void ZoomIn() => Editor.ZoomIn();
-    [RelayCommand] private void ZoomOut() => Editor.ZoomOut();
+    private bool CanPaste() => !Editor.IsBlockReadOnly && (Editor.HasClipboard);
+    private bool CanUngroup() => !Editor.IsBlockReadOnly && (Editor.HasGroupInSelection);
+    private bool CanGroup() => !Editor.IsBlockReadOnly && (Editor.SelectionCount >= 2);
+    private bool CanSave() => !Editor.IsBlockReadOnly && (Editor.Dirty || Editor.FilePath is null);
+    private bool CanRotateWorkspace() => !Editor.IsBlockReadOnly && !Editor.IsEditingBlock;
+    private bool CanZoomIn() => Editor.Zoom < 12;
+    private bool CanZoomOut() => Editor.Zoom > 0.25;
+    [RelayCommand(CanExecute = nameof(CanZoomIn))] private void ZoomIn() => Editor.ZoomIn();
+    [RelayCommand(CanExecute = nameof(CanZoomOut))] private void ZoomOut() => Editor.ZoomOut();
     [RelayCommand] private void ZoomFit() => Editor.FitToWindow();
-    [RelayCommand] private void RotateLeft() => Editor.RotateLeft();
-    [RelayCommand] private void RotateRight() => Editor.RotateRight();
+    [RelayCommand(CanExecute = nameof(CanRotateWorkspace))] private void RotateLeft() => Editor.RotateLeft();
+    [RelayCommand(CanExecute = nameof(CanRotateWorkspace))] private void RotateRight() => Editor.RotateRight();
 
-    private bool CanUndo() => Editor.CanUndo;
-    private bool CanRedo() => Editor.CanRedo;
-    private bool CanDelete() => Editor.SelectedEditor is not null;
+    private bool CanUndo() => !Editor.IsBlockReadOnly && (Editor.CanUndo);
+    private bool CanRedo() => !Editor.IsBlockReadOnly && (Editor.CanRedo);
+    private bool CanRaiseElement() => !Editor.IsBlockReadOnly && (Editor.CanRaiseElement);
+    private bool CanLowerElement() => !Editor.IsBlockReadOnly && (Editor.CanLowerElement);
+    private bool CanDelete() => !Editor.IsBlockReadOnly && (Editor.SelectedEditor is not null);
 
     // ── Insert / Arrange ────────────────────────────────────────────────────────────────────────
 
     [RelayCommand]
     private void Insert(string? type)
     {
-        if (!string.IsNullOrEmpty(type)) Editor.AddElement(type);
+        if (!Editor.IsBlockReadOnly && !string.IsNullOrEmpty(type)) Editor.AddElement(type);
     }
 
-    [RelayCommand(CanExecute = nameof(CanDelete))] private void BringToFront() => Editor.BringToFront();
-    [RelayCommand(CanExecute = nameof(CanDelete))] private void SendToBack() => Editor.SendToBack();
-    [RelayCommand(CanExecute = nameof(CanDelete))] private void BringForward() => Editor.BringForward();
-    [RelayCommand(CanExecute = nameof(CanDelete))] private void SendBackward() => Editor.SendBackward();
+    [RelayCommand(CanExecute = nameof(CanRaiseElement))] private void BringToFront() => Editor.BringToFront();
+    [RelayCommand(CanExecute = nameof(CanLowerElement))] private void SendToBack() => Editor.SendToBack();
+    [RelayCommand(CanExecute = nameof(CanRaiseElement))] private void BringForward() => Editor.BringForward();
+    [RelayCommand(CanExecute = nameof(CanLowerElement))] private void SendBackward() => Editor.SendBackward();
 
     [RelayCommand(CanExecute = nameof(CanAlign))] private void AlignLeft() => Editor.AlignLeft();
     [RelayCommand(CanExecute = nameof(CanAlign))] private void AlignRight() => Editor.AlignRight();
@@ -546,8 +617,8 @@ public partial class MainWindowViewModel : ViewModelBase
     [RelayCommand(CanExecute = nameof(InCell))] private void CellHeaderRow() => Editor.ToggleHeaderRow();
     [RelayCommand(CanExecute = nameof(InCell))] private void CellHeaderColumn() => Editor.ToggleHeaderColumn();
 
-    private bool CanAlign() => Editor.SelectionCount >= 2;
-    private bool CanDistribute() => Editor.SelectionCount >= 3;
+    private bool CanAlign() => !Editor.IsBlockReadOnly && (Editor.SelectionCount >= 2);
+    private bool CanDistribute() => !Editor.IsBlockReadOnly && (Editor.SelectionCount >= 3);
 
     [RelayCommand]
     private void Quit() => CloseRequested?.Invoke(this, EventArgs.Empty);
@@ -612,6 +683,12 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private void OnEditorStateChanged()
     {
+        BringToFrontCommand.NotifyCanExecuteChanged();
+        BringForwardCommand.NotifyCanExecuteChanged();
+        SendBackwardCommand.NotifyCanExecuteChanged();
+        SendToBackCommand.NotifyCanExecuteChanged();
+        SaveCommand.NotifyCanExecuteChanged();
+        RotateLeftCommand.NotifyCanExecuteChanged(); RotateRightCommand.NotifyCanExecuteChanged();
         UndoCommand.NotifyCanExecuteChanged();
         RedoCommand.NotifyCanExecuteChanged();
         UpdateTitle();
@@ -619,7 +696,12 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private void OnEditorPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(EditorViewModel.SelectedEditor))
+        if (e.PropertyName == nameof(EditorViewModel.Zoom))
+        {
+            ZoomInCommand.NotifyCanExecuteChanged();
+            ZoomOutCommand.NotifyCanExecuteChanged();
+        }
+        else if (e.PropertyName == nameof(EditorViewModel.SelectedEditor))
         {
             DeleteCommand.NotifyCanExecuteChanged();
             CopyCommand.NotifyCanExecuteChanged();

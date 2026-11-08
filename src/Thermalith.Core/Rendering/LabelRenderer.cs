@@ -51,7 +51,7 @@ public sealed class LabelRenderer
     public GrayBitmap RenderGray(ResolvedLabel label, RenderOptions? options = null)
     {
         options ??= RenderOptions.Default;
-        var (bmp, w, h) = Composite(label);
+        var (bmp, w, h) = Composite(label, options.PreviewRasterScale);
         using (bmp)
         {
             var gray = new byte[w * h];
@@ -65,26 +65,39 @@ public sealed class LabelRenderer
         }
     }
 
-    /// <summary>Stages 1–3: rasterize the z-ordered elements onto a white 8-bit-able surface.</summary>
-    private (SKBitmap Bmp, int W, int H) Composite(ResolvedLabel label)
+    /// <summary>Editor-only colour cue for inherited text. Print/export remain monochrome.</summary>
+    public byte[] RenderDesignPreview(ResolvedLabel label,double rasterScale = 1)
     {
+        var (bitmap,_,_) = Composite(label,rasterScale,highlightBlocks: true);
+        using (bitmap)
+        using (var image = SKImage.FromBitmap(bitmap))
+        using (var data = image.Encode(SKEncodedImageFormat.Png,100)) return data.ToArray();
+    }
+    private static readonly SKColor InheritedTextColor = new(90,170,230);
+
+    /// <summary>Stages 1–3: rasterize the z-ordered elements onto a white 8-bit-able surface.</summary>
+    private (SKBitmap Bmp, int W, int H) Composite(ResolvedLabel label, double rasterScale = 1,bool highlightBlocks = false)
+    {
+        if (!double.IsFinite(rasterScale) || rasterScale <= 0) throw new ArgumentOutOfRangeException(nameof(rasterScale));
         var canvas = label.Canvas;
         var pxPerMm = canvas.Dpi / 25.4;
-        var w = Math.Max(1, (int)Math.Ceiling(canvas.WidthMm * pxPerMm));
-        var h = Math.Max(1, (int)Math.Ceiling(canvas.HeightMm * pxPerMm));
+        var w = Math.Max(1, (int)Math.Ceiling(Math.Ceiling(canvas.WidthMm * pxPerMm) * rasterScale));
+        var h = Math.Max(1, (int)Math.Ceiling(Math.Ceiling(canvas.HeightMm * pxPerMm) * rasterScale));
 
         var bmp = new SKBitmap(w, h, SKColorType.Bgra8888, SKAlphaType.Opaque);
         using (var c = new SKCanvas(bmp))
         {
             c.Clear(SKColors.White);
-            var ctx = new DrawContext(c, pxPerMm);
+            // Scale the drawing surface, never the layout DPI: font metrics, wrapping and fit remain identical.
+            c.Scale((float)rasterScale);
+            var ctx = new DrawContext(c, pxPerMm,highlightBlocks);
             foreach (var el in label.Elements) // already in z-order (back→front)
                 DrawElement(ctx, el);
         }
         return (bmp, w, h);
     }
 
-    private readonly record struct DrawContext(SKCanvas Canvas, double PxPerMm)
+    private readonly record struct DrawContext(SKCanvas Canvas, double PxPerMm,bool HighlightBlocks = false,bool Inherited = false)
     {
         public float Px(double mm) => (float)(mm * PxPerMm);
     }
@@ -100,6 +113,13 @@ public sealed class LabelRenderer
 
         switch (el)
         {
+            case ResolvedBlock block:
+                ctx.Canvas.Save();
+                ctx.Canvas.Translate(ctx.Px(block.XMm),ctx.Px(block.YMm));
+                ctx.Canvas.Scale((float)(block.WMm / Math.Max(0.001,block.SourceWidthMm)),(float)(block.HMm / Math.Max(0.001,block.SourceHeightMm)));
+                foreach (var child in block.Elements) DrawElement(ctx with { Inherited = ctx.HighlightBlocks },child);
+                ctx.Canvas.Restore();
+                break;
             case ResolvedText t: DrawText(ctx, t); break;
             case ResolvedShape s: DrawShape(ctx, s); break;
             case ResolvedLine l: DrawLine(ctx, l); break;
@@ -124,7 +144,7 @@ public sealed class LabelRenderer
         var tf = _fonts.Resolve(t.Style.FontFamily, t.Style.Bold, t.Style.Italic); // FontService owns the typeface lifetime
         using var paint = new SKPaint
         {
-            Color = SKColors.Black,
+            Color = ctx.Inherited ? InheritedTextColor : SKColors.Black,
             IsAntialias = true,           // text: AA on → threshold (§6.3.3)
             Typeface = tf,
             FakeBoldText = t.Style.Bold && !TypefaceIsBold(tf),
@@ -162,7 +182,7 @@ public sealed class LabelRenderer
             DrawLineText(ctx.Canvas, lines[i], x, baseline, paint, letterSpacingPx);
             if (t.Style.Underline)
             {
-                using var ul = new SKPaint { Color = SKColors.Black, IsAntialias = true, StrokeWidth = Math.Max(1, paint.TextSize / 14f) };
+                using var ul = new SKPaint { Color = ctx.Inherited ? InheritedTextColor : SKColors.Black, IsAntialias = true, StrokeWidth = Math.Max(1, paint.TextSize / 14f) };
                 var uy = baseline - metrics.Descent / 2;
                 ctx.Canvas.DrawLine(x, uy, x + lineW, uy, ul);
             }
@@ -221,6 +241,12 @@ public sealed class LabelRenderer
         List<ResolvedElement>? updated = null;
         for (var i = 0; i < label.Elements.Count; i++)
         {
+            if (label.Elements[i] is ResolvedBlock block)
+            {
+                updated ??= [.. label.Elements];
+                updated[i] = block with { Elements = ApplyAutoSize(new ResolvedLabel(label.Canvas,block.Elements)).Elements };
+                continue;
+            }
             if (label.Elements[i] is not ResolvedText { AutoSize: true } t) continue;
             var (w, h) = MeasureTextMm(t.Text, t.Style.FontFamily, t.Style.FontSizePt, t.Style.Bold,
                 t.Style.Italic, t.Style.LetterSpacing, t.Style.LineSpacing, label.Canvas.Dpi);
@@ -590,7 +616,7 @@ public sealed class LabelRenderer
         var textSizePt = b.TextStyle.FontSizePt;
         using var textPaint = showText ? new SKPaint
         {
-            Color = SKColors.Black,
+            Color = ctx.Inherited ? InheritedTextColor : SKColors.Black,
             IsAntialias = true,
             Typeface = _fonts.Resolve(b.TextStyle.FontFamily, false, false),
             TextSize = (float)(textSizePt * dpi / 72.0),
@@ -681,7 +707,7 @@ public sealed class LabelRenderer
             Style = new ResolvedTextStyle
             {
                 FontFamily = q.TextFontFamily, FontSizePt = q.TextSizePt,
-                Bold = q.TextBold, Italic = q.TextItalic, LetterSpacing = q.TextLetterSpacing,
+                Bold = q.TextBold, Italic = q.TextItalic, Underline = q.TextUnderline, LetterSpacing = q.TextLetterSpacing,
             },
         };
         // Grow vertically for wrapped/multiline text. Horizontal overflow is allowed when Wrap=none.
@@ -897,6 +923,15 @@ public sealed class LabelRenderer
         var rowY = new float[tab.Rows + 1];
         for (var i = 0; i < tab.Rows; i++) rowY[i + 1] = rowY[i] + rowH[i];
 
+        var customBorders = tab.Cells.Any(row => row.Any(cell => cell.Borders is not null));
+        var edges = new Dictionary<(bool Vertical, int Axis, int Segment), (CellBorder Border, bool Explicit)>();
+        void Edge(bool vertical, int axis, int segment, CellBorder? custom)
+        {
+            var key = (vertical,axis,segment);
+            var candidate = (Border: custom ?? new CellBorder { WidthMm = tab.BorderWidthMm }, Explicit: custom is not null);
+            if (!edges.TryGetValue(key,out var previous) || candidate.Explicit && !previous.Explicit || candidate.Explicit == previous.Explicit && candidate.Border.WidthMm >= previous.Border.WidthMm)
+                edges[key] = candidate;
+        }
         var border = tab.BorderWidthMm > 0 ? Math.Max(1f, (float)Math.Round(tab.BorderWidthMm * ctx.PxPerMm)) : 0f;
         using var borderPaint = border > 0 ? new SKPaint { Color = SKColors.Black, IsAntialias = false, Style = SKPaintStyle.Stroke, StrokeWidth = border } : null;
 
@@ -912,9 +947,28 @@ public sealed class LabelRenderer
                 var rect = new SKRect(x + colX[c], y + rowY[r], x + colX[cEnd], y + rowY[rEnd]);
 
                 if (cell.FillPercent > 0) FillDithered(ctx.Canvas, rect, cell.FillPercent);
-                if (borderPaint is not null) ctx.Canvas.DrawRect(rect, borderPaint);
+                if (!customBorders && borderPaint is not null) ctx.Canvas.DrawRect(rect, borderPaint);
+                if (customBorders)
+                {
+                    for (var column = c; column < cEnd; column++) { Edge(false,r,column,cell.Borders?.Top); Edge(false,rEnd,column,cell.Borders?.Bottom); }
+                    for (var row = r; row < rEnd; row++) { Edge(true,c,row,cell.Borders?.Left); Edge(true,cEnd,row,cell.Borders?.Right); }
+                }
                 if (cell.Text.Length > 0) DrawCellText(ctx, cell, rect, dpi);
             }
+        foreach (var (key, value) in edges)
+        {
+            if (value.Border.WidthMm <= 0) continue;
+            var weight = Math.Max(1f,(float)Math.Round(value.Border.WidthMm * ctx.PxPerMm));
+            using var effect = value.Border.Style switch
+            {
+                "dotted" => SKPathEffect.CreateDash([weight, weight * 2],0),
+                "dashed" => SKPathEffect.CreateDash([weight * 4, weight * 2],0),
+                _ => null,
+            };
+            using var paint = new SKPaint { Color = SKColors.Black, IsAntialias = false, StrokeWidth = weight, Style = SKPaintStyle.Stroke, PathEffect = effect };
+            if (key.Vertical) ctx.Canvas.DrawLine(x + colX[key.Axis], y + rowY[key.Segment], x + colX[key.Axis], y + rowY[key.Segment + 1], paint);
+            else ctx.Canvas.DrawLine(x + colX[key.Segment], y + rowY[key.Axis], x + colX[key.Segment + 1], y + rowY[key.Axis], paint);
+        }
     }
 
     // Ordered (Bayer 4×4) dither for flat cell fills — uniform tone, unlike noisy error diffusion.
@@ -947,7 +1001,7 @@ public sealed class LabelRenderer
         var tf = _fonts.Resolve(cell.FontFamily, cell.Bold, cell.Italic);
         using var paint = new SKPaint
         {
-            Color = cell.TextWhite ? SKColors.White : SKColors.Black,
+            Color = ctx.Inherited ? InheritedTextColor : cell.TextWhite ? SKColors.White : SKColors.Black,
             IsAntialias = true,
             Typeface = tf,
             FakeBoldText = cell.Bold && !TypefaceIsBold(tf),
@@ -970,6 +1024,12 @@ public sealed class LabelRenderer
             _ => rect.MidY + (lineH / 2 - m.Descent),
         };
         DrawLineText(ctx.Canvas, cell.Text, tx, ty, paint, 0f); // fallback-aware (CJK etc.)
+        if (cell.Underline && tw > 0)
+        {
+            using var underline = new SKPaint { Color = paint.Color, IsAntialias = true, StrokeWidth = Math.Max(1f, paint.TextSize / 16f) };
+            var y = ty + Math.Max(1f, m.Descent / 2f);
+            ctx.Canvas.DrawLine(tx, y, tx + tw, y, underline);
+        }
     }
 
     private static float[] AxisSizes(double[]? explicitMm, int count, float totalPx, double pxPerMm)

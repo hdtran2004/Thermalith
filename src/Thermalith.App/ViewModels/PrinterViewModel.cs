@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Niimbot.Net;
@@ -128,7 +128,7 @@ public sealed partial class PrinterViewModel : ObservableObject
     // Nullable so the bound ComboBox can briefly hold null while LabelTypes is cleared on reconnect
     // (binding a null back into a non-nullable enum threw InvalidCastException on the interface).
     [ObservableProperty] private LabelType? _selectedLabelType = LabelType.WithGaps;
-    [ObservableProperty] private int _density = 3;
+    [ObservableProperty] private int _density = 5;
     [ObservableProperty] private int _densityMin = 1;
     [ObservableProperty] private int _densityMax = 5;
     [ObservableProperty] private int _copies = 1;
@@ -218,7 +218,7 @@ public sealed partial class PrinterViewModel : ObservableObject
 
             DensityMin = _caps.DensityMin;
             DensityMax = _caps.DensityMax;
-            Density = _caps.DensityDefault;
+            Density = _caps.DensityMax;
             LabelTypes.Clear();
             foreach (var t in _caps.SupportedLabelTypes) LabelTypes.Add(t);
             SelectedLabelType = LabelTypes.Count > 0 ? LabelTypes[0] : LabelType.WithGaps;
@@ -349,6 +349,8 @@ public sealed partial class PrinterViewModel : ObservableObject
     }
 
     /// <summary>Set the selected print label-type from a roll's paper-type string (drives SetLabelType at print).</summary>
+    [ObservableProperty] private bool _allowMediaOverride;
+
     public void ApplyPaperType(string? paperType)
     {
         SelectedLabelType = paperType?.ToLowerInvariant() switch
@@ -392,6 +394,16 @@ public sealed partial class PrinterViewModel : ObservableObject
         return rfid;
     }
 
+    public Func<string, Task<bool>>? ConfirmParameterSequenceAsync { get; set; }
+    private async Task<bool> ConfirmParameterRunAsync(int count)
+    {
+        var incrementing = _editor.HasIncrementingParameters;
+        var summary = _editor.BeginParameterPrintRun(count);
+        if (!incrementing) return true;
+        if (ConfirmParameterSequenceAsync is not null) return await ConfirmParameterSequenceAsync(summary);
+        Message = "Auto-increment printing requires confirmation.";
+        return false;
+    }
     public Func<int, Task<bool>>? ConfirmLargeCopyCountAsync { get; set; }
 
     private async Task<bool> ConfirmCopiesAsync(int copies)
@@ -412,6 +424,10 @@ public sealed partial class PrinterViewModel : ObservableObject
 
     public string PrintButtonText => IsPrinting ? "Cancel Print" : "Print";
     public System.Windows.Input.ICommand PrintButtonCommand => IsPrinting ? CancelPrintCommand : PrintCommand;
+
+    private static Niimbot.Net.Encoding.MonochromeBitmap RenderOnUi(Func<Niimbot.Net.Encoding.MonochromeBitmap> render) =>
+        Avalonia.Threading.Dispatcher.UIThread.CheckAccess() ? render()
+            : Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(render).GetAwaiter().GetResult();
 
     private bool CanCancelPrint() => IsPrinting && _printCancellation is { IsCancellationRequested: false };
 
@@ -435,6 +451,7 @@ public sealed partial class PrinterViewModel : ObservableObject
 
     private void FinishPrint()
     {
+        _editor.EndParameterPrintRun();
         IsPrinting = false;
         _printCancellation?.Dispose();
         _printCancellation = null;
@@ -457,6 +474,7 @@ public sealed partial class PrinterViewModel : ObservableObject
             if (!await ConfirmCopiesAsync(requestedCopies)) { Message = "Print cancelled."; return; }
             if (ConfirmLoadedLabelAsync is not null && !await ConfirmLoadedLabelAsync()) { Message = "Print cancelled."; return; }
             _printCancellation.Token.ThrowIfCancellationRequested();
+            if (!await ConfirmParameterRunAsync(requestedCopies)) { Message = "Print cancelled."; return; }
             var mono = _editor.RenderForPrint();
             var rawW = mono.WidthPx;
             var rawH = mono.HeightPx;
@@ -474,7 +492,7 @@ public sealed partial class PrinterViewModel : ObservableObject
             var options = new PrintOptions
             {
                 Density = Density,
-                Copies = requestedCopies,
+                Copies = _editor.HasIncrementingParameters ? 1 : requestedCopies,
                 LabelType = SelectedLabelType ?? LabelType.WithGaps,
                 HorizontalAlign = PrintAlignment.Center,
                 OffsetXPx = OffsetX,
@@ -486,7 +504,30 @@ public sealed partial class PrinterViewModel : ObservableObject
                     Message = $"Printing {p.Page}/{p.TotalPages} — {p.PagePrintPercent}%";
             });
 
-            await _client.PrintAsync(mono, options, progress, _printCancellation.Token);
+            if (_editor.HasIncrementingParameters)
+            {
+                if (_client.SupportsContinuousBatch)
+                {
+                    await _client.PrintContinuousAsync(requestedCopies, label =>
+                    {
+                        var raster = label == 0 ? mono : RenderOnUi(() => _editor.RenderForPrint(label));
+                        return _caps is { } head && raster.WidthPx > head.PrintheadPixels ? CropCentered(raster, head.PrintheadPixels) : raster;
+                    }, options, _editor.CompleteParameterLabel, progress, _printCancellation.Token);
+                }
+                else
+                for (var label = 0; label < requestedCopies; label++)
+                {
+                    _printCancellation.Token.ThrowIfCancellationRequested();
+                    var raster = label == 0 ? mono : _editor.RenderForPrint(label);
+                    if (_caps is { } head && raster.WidthPx > head.PrintheadPixels)
+                        raster = CropCentered(raster, head.PrintheadPixels);
+                    Message = $"Printing label {label + 1}/{requestedCopies}…";
+                    try { await _client.PrintAsync(raster, options, ct: _printCancellation.Token); }
+                    catch (PrintException ex) { throw new PrintException($"Label {label + 1}/{requestedCopies}: {ex.Message}",ex.Code,ex); }
+                    _editor.CompleteParameterLabel();
+                }
+            }
+            else await _client.PrintAsync(mono, options, progress, _printCancellation.Token);
             Message = "Printed.";
             await RefreshStatusCoreAsync();
         }
@@ -510,7 +551,7 @@ public sealed partial class PrinterViewModel : ObservableObject
     /// </summary>
     public async Task<int> PrintMergeAsync(
         int rowCount,
-        Func<int, Niimbot.Net.Encoding.MonochromeBitmap> renderRow,
+        Func<int, int, Niimbot.Net.Encoding.MonochromeBitmap> renderRow,
         IProgress<int>? progress,
         Func<bool> cancelled)
     {
@@ -524,22 +565,59 @@ public sealed partial class PrinterViewModel : ObservableObject
             var copies = Math.Max(1, Copies);
             if (rowCount > 0 && !await ConfirmCopiesAsync(copies)) { Message = "Print cancelled."; return 0; }
             if (rowCount > 0 && ConfirmLoadedLabelAsync is not null && !await ConfirmLoadedLabelAsync()) { Message = "Print cancelled."; return 0; }
+            if (rowCount > 0 && !await ConfirmParameterRunAsync(checked(rowCount * copies))) { Message = "Print cancelled."; return 0; }
+            if (_client.SupportsContinuousBatch && rowCount > 0)
+            {
+                var incrementing = _editor.HasIncrementingParameters;
+                var batchOptions = new PrintOptions
+                {
+                    Density = Density, Copies = incrementing ? 1 : copies,
+                    LabelType = SelectedLabelType ?? LabelType.WithGaps,
+                    HorizontalAlign = PrintAlignment.Center, OffsetXPx = OffsetX, OffsetYPx = OffsetY,
+                };
+                var confirmed = 0;
+                await _client.PrintContinuousAsync(incrementing ? checked(rowCount * copies) : rowCount, index =>
+                {
+                    if (cancelled()) _printCancellation.Cancel();
+                    _printCancellation.Token.ThrowIfCancellationRequested();
+                    var raster = RenderOnUi(() => renderRow(incrementing ? index / copies : index, incrementing ? index : checked(index * copies)));
+                    return _caps is { } head && raster.WidthPx > head.PrintheadPixels ? CropCentered(raster, head.PrintheadPixels) : raster;
+                }, batchOptions, () =>
+                {
+                    if (incrementing) _editor.CompleteParameterLabel();
+                    if (++confirmed % copies == 0) { printed++; progress?.Report(printed); }
+                }, ct: _printCancellation.Token);
+            }
+            else
             for (var i = 0; i < rowCount; i++)
             {
                 if (cancelled() || _printCancellation.IsCancellationRequested) break; // stop before the next row
-                var mono = renderRow(i);
+                var mono = renderRow(i, checked(i * copies));
                 if (_caps is { } caps && mono.WidthPx > caps.PrintheadPixels)
                     mono = CropCentered(mono, caps.PrintheadPixels);
                 var options = new PrintOptions
                 {
                     Density = Density,
-                    Copies = copies,
+                    Copies = _editor.HasIncrementingParameters ? 1 : copies,
                     LabelType = SelectedLabelType ?? LabelType.WithGaps,
                     HorizontalAlign = PrintAlignment.Center,
                     OffsetXPx = OffsetX,
                     OffsetYPx = OffsetY,
                 };
-                await _client.PrintAsync(mono, options, ct: _printCancellation.Token);
+                if (_editor.HasIncrementingParameters)
+                {
+                    for (var copy = 0; copy < copies; copy++)
+                    {
+                        if (cancelled()) return printed;
+                        _printCancellation.Token.ThrowIfCancellationRequested();
+                        var raster = copy == 0 ? mono : renderRow(i, checked(i * copies + copy));
+                        if (_caps is { } head && raster.WidthPx > head.PrintheadPixels)
+                            raster = CropCentered(raster, head.PrintheadPixels);
+                        await _client.PrintAsync(raster, options, ct: _printCancellation.Token);
+                        _editor.CompleteParameterLabel();
+                    }
+                }
+                else await _client.PrintAsync(mono, options, ct: _printCancellation.Token);
                 printed++;
                 progress?.Report(printed);
             }

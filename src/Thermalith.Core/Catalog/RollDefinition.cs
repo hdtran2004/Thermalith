@@ -69,9 +69,8 @@ public sealed record LabelRollCatalog
     public LabelRollCatalog Upsert(RollDefinition roll)
     {
         var rolls = new List<RollDefinition>(Rolls);
-        if (!string.IsNullOrEmpty(roll.Barcode))
         {
-            var idx = rolls.FindIndex(r => string.Equals(r.Barcode, roll.Barcode, StringComparison.Ordinal));
+            var idx = rolls.FindIndex(r => !string.IsNullOrEmpty(roll.Barcode) ? string.Equals(r.Barcode, roll.Barcode, StringComparison.Ordinal) : string.IsNullOrEmpty(r.Barcode) && string.Equals(r.Name, roll.Name, StringComparison.OrdinalIgnoreCase));
             if (idx >= 0) rolls[idx] = roll;
             else rolls.Add(roll);
         }

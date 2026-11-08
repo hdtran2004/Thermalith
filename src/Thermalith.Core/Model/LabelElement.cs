@@ -19,6 +19,7 @@ namespace Thermalith.Core.Model;
 [JsonDerivedType(typeof(LineElement), "line")]
 [JsonDerivedType(typeof(ImageElement), "image")]
 [JsonDerivedType(typeof(TableElement), "table")]
+[JsonDerivedType(typeof(BlockElement), "block")]
 public abstract record LabelElement
 {
     public required string Id { get; init; }
@@ -94,4 +95,14 @@ public sealed record TableElement : LabelElement
 {
     [JsonIgnore] public override string Type => "table";
     public TableProps Props { get; init; } = new();
+}
+
+/// <summary>A live library reference. Parameters belong to the containing design.</summary>
+public sealed record BlockElement : LabelElement
+{
+    [JsonIgnore] public override string Type => "block";
+    public required string BlockId { get; init; }
+    public List<string> ParameterNames { get; init; } = [];
+    public Dictionary<string,string> ParameterBindings { get; init; } = [];
+    public Dictionary<string,string> ParameterSourceNames { get; init; } = [];
 }

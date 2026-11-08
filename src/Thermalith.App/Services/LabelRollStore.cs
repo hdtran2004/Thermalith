@@ -27,6 +27,13 @@ public sealed class LabelRollStore
         Save();
     }
 
+    public void Replace(RollDefinition previous, RollDefinition updated)
+    {
+        Catalog = Catalog with { Rolls = Catalog.Rolls.Where(r => !(!string.IsNullOrEmpty(previous.Barcode)
+            ? r.Barcode == previous.Barcode : string.IsNullOrEmpty(r.Barcode) && r.Name == previous.Name)).ToList() };
+        Remember(updated);
+    }
+
     private LabelRollCatalog Load()
     {
         try

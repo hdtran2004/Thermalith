@@ -82,6 +82,17 @@
                     Command="{Binding $parent[Window].((vm:MainWindowViewModel)DataContext).CenterOnLabelVCommand}" />
         </StackPanel>
 
+        <TextBlock Classes="section" Text="Layer order" />
+        <StackPanel Orientation="Horizontal" Spacing="6">
+            <Button Classes="icon" ToolTip.Tip="Bring to front" AutomationProperties.Name="Bring to front"
+                    Command="{Binding $parent[Window].((vm:MainWindowViewModel)DataContext).BringToFrontCommand}"><mi:MaterialIcon Kind="ArrangeBringToFront" /></Button>
+            <Button Classes="icon" ToolTip.Tip="Bring forward" AutomationProperties.Name="Bring forward"
+                    Command="{Binding $parent[Window].((vm:MainWindowViewModel)DataContext).BringForwardCommand}"><mi:MaterialIcon Kind="ArrangeBringForward" /></Button>
+            <Button Classes="icon" ToolTip.Tip="Send backward" AutomationProperties.Name="Send backward"
+                    Command="{Binding $parent[Window].((vm:MainWindowViewModel)DataContext).SendBackwardCommand}"><mi:MaterialIcon Kind="ArrangeSendBackward" /></Button>
+            <Button Classes="icon" ToolTip.Tip="Send to back" AutomationProperties.Name="Send to back"
+                    Command="{Binding $parent[Window].((vm:MainWindowViewModel)DataContext).SendToBackCommand}"><mi:MaterialIcon Kind="ArrangeSendToBack" /></Button>
+        </StackPanel>
         <Separator Margin="0,2" />
     </StackPanel>
 

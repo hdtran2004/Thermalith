@@ -11,6 +11,11 @@ public static class PlatformDirectories
     /// <summary>The Thermalith app-data directory, created if missing.</summary>
     public static string AppData()
     {
+        // Isolated profiles for portable use and desktop integration verification.
+        if (Environment.GetEnvironmentVariable("THERMALITH_DATA_DIR") is { Length: > 0 } profile)
+        {
+            var fullPath = Path.GetFullPath(profile); Directory.CreateDirectory(fullPath); return fullPath;
+        }
         var dir = Path.Combine(BaseDir(), AppFolder);
         Directory.CreateDirectory(dir);
         return dir;

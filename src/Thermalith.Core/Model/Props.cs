@@ -61,6 +61,7 @@ public sealed record QrProps
     public double TextSizePt { get; init; } = 8;
     public bool TextBold { get; init; } = false;
     public bool TextItalic { get; init; } = false;
+    public bool TextUnderline { get; init; }
     public string TextAlignment { get; init; } = "center";
     public string TextWrap { get; init; } = "none";
     public double TextLetterSpacing { get; init; } = 0;
@@ -171,6 +172,7 @@ public sealed record TableProps
 /// Font/justify default to the table's style when unset; TextColor stays crisp black/white.</summary>
 public sealed record TableCell
 {
+    public CellBorders? Borders { get; init; }
     public string Content { get; init; } = "";
     public Justify? Justify { get; init; }
     public int ColSpan { get; init; } = 1;
@@ -181,6 +183,7 @@ public sealed record TableCell
     public double? FontSizePt { get; init; }
     public bool? Bold { get; init; }
     public bool? Italic { get; init; }
+    public bool? Underline { get; init; }
 
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extensions { get; init; }
 }

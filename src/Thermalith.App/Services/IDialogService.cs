@@ -5,11 +5,12 @@ namespace Thermalith.App.Services;
 /// <summary>App-level prompts the view-model can't show itself (kept UI-free, §4.1). Implemented in the window.</summary>
 public interface IDialogService
 {
-    /// <summary>Ask whether to discard unsaved changes. Returns true to proceed (discard), false to cancel.</summary>
+    /// <summary>Ask whether to save or discard unsaved changes. Returns true after saving or discarding; false if cancelled or saving fails.</summary>
     Task<bool> ConfirmDiscardAsync();
 
     /// <summary>Show the roll/label definition dialog seeded with <paramref name="seed"/>. Returns the roll, or null on cancel.</summary>
     Task<RollDefinition?> DefineRollAsync(RollDefinition seed, string title);
+    Task<NewLabelSetup?> CreateLabelAsync(RollDefinition seed);
 
     /// <summary>Show the Help → About dialog (identity, version, donate link).</summary>
     Task ShowAboutAsync();
@@ -38,3 +39,5 @@ public interface IMergeProgress
     /// <summary>Close the progress window.</summary>
     void Close();
 }
+
+public sealed record NewLabelSetup(string DesignName, RollDefinition Stock, string Layout = "Landscape");

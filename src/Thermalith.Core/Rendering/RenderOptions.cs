@@ -14,5 +14,8 @@ public sealed record RenderOptions
     /// </summary>
     public bool ApplyOrientation { get; init; } = true;
 
+    /// <summary>Preview-only raster scale. Layout stays at the document DPI; printing ignores this.</summary>
+    public double PreviewRasterScale { get; init; } = 1;
+
     public static readonly RenderOptions Default = new();
 }

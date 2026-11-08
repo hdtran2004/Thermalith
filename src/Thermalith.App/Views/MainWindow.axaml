@@ -98,7 +98,6 @@
                         <NativeMenuItem Header="Text" Command="{Binding InsertCommand}" CommandParameter="text" />
                         <NativeMenuItem Header="Barcode" Command="{Binding InsertCommand}" CommandParameter="barcode" />
                         <NativeMenuItem Header="QR Code" Command="{Binding InsertCommand}" CommandParameter="qr" />
-                        <NativeMenuItem Header="Serial" Command="{Binding InsertCommand}" CommandParameter="serial" />
                         <NativeMenuItem Header="Date / Time" Command="{Binding InsertCommand}" CommandParameter="datetime" />
                         <NativeMenuItem Header="Shape" Command="{Binding InsertCommand}" CommandParameter="shape" />
                         <NativeMenuItem Header="Image" Command="{Binding InsertCommand}" CommandParameter="image" />
@@ -198,6 +197,21 @@
     </NativeMenu.Menu>
 
     <DockPanel>
+        <Border DockPanel.Dock="Top" IsVisible="{Binding Editor.IsBlockSource}" Background="#2244CCCC" Padding="10,6">
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <TextBlock Text="Shared custom block - changes affect all referencing designs" VerticalAlignment="Center" />
+                <Button Content="Unlock for editing..." IsVisible="{Binding Editor.IsBlockReadOnly}" Command="{Binding UnlockCustomBlockCommand}" />
+                <TextBlock Text="Unlocked for shared editing" IsVisible="{Binding Editor.BlockSourceUnlocked}" VerticalAlignment="Center" />
+            </StackPanel>
+        </Border>
+        <Border DockPanel.Dock="Top" IsVisible="{Binding Editor.IsEditingBlock}" Background="#3355BBBB" Padding="10,6">
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <TextBlock Text="Editing shared block in place" VerticalAlignment="Center" />
+                <Button Content="Save block changes" Command="{Binding SaveBlockChangesCommand}" />
+                <Button Content="Cancel block editing" Command="{Binding CancelBlockChangesCommand}" />
+            </StackPanel>
+        </Border>
+
 
         <!-- Exports the NativeMenu above to the system menu bar. Renders nothing itself; on
              Windows/Linux it stays collapsed and the in-window Menu below is used instead. -->
@@ -209,13 +223,17 @@
                 <MenuItem Name="MiNew" Header="_New" Command="{Binding NewCommand}" />
                 <MenuItem Name="MiOpen" Header="_Open…" Command="{Binding OpenCommand}" />
                 <MenuItem Name="MiRecent" Header="Open _Recent" IsEnabled="{Binding HasRecentFiles}" />
+                <MenuItem Header="_Collections..." Click="OnCollections" />
                 <Separator />
                 <MenuItem Name="MiSave" Header="_Save" Command="{Binding SaveCommand}" />
                 <MenuItem Name="MiSaveAs" Header="Save _As…" Command="{Binding SaveAsCommand}" />
+                <MenuItem Header="Save as custom block..." Command="{Binding SaveAsCustomBlockCommand}" />
+                <Separator />
+                <MenuItem Header="Print pre_view…" Click="OnPrintPreview" IsEnabled="{Binding !Printer.IsPrinting}" />
                 <Separator />
                 <MenuItem Name="MiQuit" Header="_Quit" Command="{Binding QuitCommand}" />
             </MenuItem>
-            <MenuItem Header="_Edit">
+            <MenuItem Header="_Edit" IsEnabled="{Binding !Editor.IsBlockReadOnly}">
                 <MenuItem Name="MiUndo" Header="_Undo" Command="{Binding UndoCommand}" />
                 <MenuItem Name="MiRedo" Header="_Redo" Command="{Binding RedoCommand}" />
                 <Separator />
@@ -231,7 +249,10 @@
                 <MenuItem Name="MiZoomOut" Header="Zoom _Out" Command="{Binding ZoomOutCommand}" />
                 <MenuItem Name="MiZoomFit" Header="Zoom to _Fit" Command="{Binding ZoomFitCommand}" />
                 <Separator />
+                <MenuItem Header="Workspace _Print View" ToggleType="CheckBox" IsChecked="{Binding Editor.IsPrintView, Mode=TwoWay}" />
+                <Separator />
                 <MenuItem Header="Show _Grid" ToggleType="CheckBox" IsChecked="{Binding Editor.ShowGrid, Mode=TwoWay}" />
+                <MenuItem Header="Smart snap to _elements" ToggleType="CheckBox" IsChecked="{Binding Editor.SmartSnapEnabled, Mode=TwoWay}" ToolTip.Tip="Snap edges, centres and equal whitespace while dragging. Hold Alt to bypass." />
                 <MenuItem Header="_Snap to Grid" ToggleType="CheckBox" IsChecked="{Binding Editor.SnapEnabled, Mode=TwoWay}" />
                 <MenuItem Header="Show _Printable Area" ToggleType="CheckBox" IsChecked="{Binding Editor.ShowSafeArea, Mode=TwoWay}" />
                 <Separator />
@@ -250,17 +271,23 @@
                               IsChecked="{Binding Theme, Converter={StaticResource Eq}, ConverterParameter=Dark, Mode=OneWay}" />
                 </MenuItem>
             </MenuItem>
-            <MenuItem Header="_Insert">
+            <MenuItem Header="_Insert" IsEnabled="{Binding !Editor.IsBlockReadOnly}">
+                <MenuItem Header="Custom block..." Click="OnCustomBlocks" />
                 <MenuItem Header="_Text" Command="{Binding InsertCommand}" CommandParameter="text" />
                 <MenuItem Header="_Barcode" Command="{Binding InsertCommand}" CommandParameter="barcode" />
                 <MenuItem Header="_QR Code" Command="{Binding InsertCommand}" CommandParameter="qr" />
-                <MenuItem Header="_Serial" Command="{Binding InsertCommand}" CommandParameter="serial" />
                 <MenuItem Header="_Date / Time" Command="{Binding InsertCommand}" CommandParameter="datetime" />
                 <MenuItem Header="S_hape" Command="{Binding InsertCommand}" CommandParameter="shape" />
                 <MenuItem Header="_Image" Command="{Binding InsertCommand}" CommandParameter="image" />
                 <MenuItem Header="Clip _Art…" Command="{Binding ToggleClipPaletteCommand}"
                           ToolTip.Tip="Open the clip-art palette" />
                 <MenuItem Header="Ta_ble" Command="{Binding InsertCommand}" CommandParameter="table" />
+            </MenuItem>
+            <MenuItem Header="_Parameters" SubmenuOpened="OnParametersOpened">
+                <MenuItem Header="Show parameter _references" ToggleType="CheckBox" IsChecked="{Binding Editor.ShowParameterReferences, Mode=TwoWay}" ToolTip.Tip="Toggle text between parameter references and next values. QR and barcode symbols always encode actual values." />
+                <Separator />
+                <MenuItem Header="_Manage parameters…" Click="OnManageParameters" />
+                <MenuItem x:Name="MiParameterReferences" Header="_Insert reference" />
             </MenuItem>
             <MenuItem Header="_Data Merge">
                 <MenuItem Header="_Select Data File…" Command="{Binding DataMerge.SelectFileCommand}" />
@@ -277,7 +304,7 @@
                 <Separator />
                 <MenuItem Header="_Print Merge…" Command="{Binding DataMerge.PrintMergeCommand}" />
             </MenuItem>
-            <MenuItem Header="_Arrange">
+            <MenuItem Header="_Arrange" IsEnabled="{Binding !Editor.IsBlockReadOnly}">
                 <MenuItem Name="MiGroup" Header="_Group" Command="{Binding GroupCommand}" />
                 <MenuItem Name="MiUngroup" Header="_Ungroup" Command="{Binding UngroupCommand}" />
                 <Separator />
@@ -324,60 +351,76 @@
             </MenuItem>
         </Menu>
 
-        <!-- Toolbar -->
-        <Border DockPanel.Dock="Top" Background="{DynamicResource SurfaceBar}" Padding="6,4">
+        <!-- Standard command toolbar; scrollable command groups retain access at smaller widths. -->
+        <Border DockPanel.Dock="Top" Background="{DynamicResource SurfaceBar}" BorderBrush="{DynamicResource DividerWeak}" BorderThickness="0,0,0,1" Padding="10,7">
             <Grid ColumnDefinitions="*,Auto">
-                <StackPanel Orientation="Horizontal" Spacing="6">
-                    <Button Content="New" Command="{Binding NewCommand}" />
-                    <Button Content="Open" Command="{Binding OpenCommand}" />
-                    <Button Content="Save" Command="{Binding SaveCommand}" />
-                    <Rectangle Width="1" Fill="{DynamicResource DividerWeak}" Margin="4,0" />
-                    <Button Content="Undo" Command="{Binding UndoCommand}" />
-                    <Button Content="Redo" Command="{Binding RedoCommand}" />
-                    <Rectangle Width="1" Fill="{DynamicResource DividerWeak}" Margin="4,0" />
-                    <Button Content="−" Command="{Binding ZoomOutCommand}" />
-                    <Button Content="Fit" Command="{Binding ZoomFitCommand}" />
-                    <Button Content="+" Command="{Binding ZoomInCommand}" />
-                    <Rectangle Width="1" Fill="{DynamicResource DividerWeak}" Margin="4,0" />
-                    <!-- Quick canvas-size edit; bound to the same canvas as the Properties panel (§C). -->
-                    <TextBlock Text="W" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" />
-                    <NumericUpDown Width="140" Value="{Binding Editor.CanvasWidthMm, Converter={StaticResource Nz}}" Minimum="1" FormatString="0.#"
-                             VerticalAlignment="Center" ToolTip.Tip="Canvas width (mm)" />
-                    <TextBlock Text="H" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" />
-                    <NumericUpDown Width="140" Value="{Binding Editor.CanvasHeightMm, Converter={StaticResource Nz}}" Minimum="1" FormatString="0.#"
-                             VerticalAlignment="Center" ToolTip.Tip="Canvas height (mm)" />
-                    <TextBlock Text="mm" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" />
-                    <Rectangle Width="1" Fill="{DynamicResource DividerWeak}" Margin="4,0" />
-                    <!-- Rotate the label orientation: turns the design view; the physical label stays fixed. -->
-                    <Button Command="{Binding RotateLeftCommand}" ToolTip.Tip="Rotate label left 90°">
-                        <mi:MaterialIcon Kind="RotateLeft" Width="16" Height="16" />
+                <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                    <StackPanel Orientation="Horizontal" Spacing="3">
+                        <Button Classes="tool" Command="{Binding NewCommand}" ToolTip.Tip="New label (Ctrl+N)" AutomationProperties.Name="New label"><mi:MaterialIcon Kind="FileOutline" /></Button>
+                        <Button Classes="tool" Command="{Binding OpenCommand}" ToolTip.Tip="Open label (Ctrl+O)" AutomationProperties.Name="Open label"><mi:MaterialIcon Kind="FolderOpen" /></Button>
+                        <Button Classes="tool" Command="{Binding SaveCommand}" ToolTip.Tip="Save label (Ctrl+S)" AutomationProperties.Name="Save label"><mi:MaterialIcon Kind="ContentSave" /></Button>
+                        <Rectangle Classes="toolDivider" />
+                        <Button Classes="tool" Command="{Binding UndoCommand}" ToolTip.Tip="Undo (Ctrl+Z)" AutomationProperties.Name="Undo"><mi:MaterialIcon Kind="Undo" /></Button>
+                        <Button Classes="tool" Command="{Binding RedoCommand}" ToolTip.Tip="Redo (Ctrl+Y)" AutomationProperties.Name="Redo"><mi:MaterialIcon Kind="Redo" /></Button>
+                        <Rectangle Classes="toolDivider" />
+                        <Button Classes="tool" Command="{Binding CutCommand}" ToolTip.Tip="Cut (Ctrl+X)" AutomationProperties.Name="Cut"><mi:MaterialIcon Kind="ContentCut" /></Button>
+                        <Button Classes="tool" Command="{Binding CopyCommand}" ToolTip.Tip="Copy (Ctrl+C)" AutomationProperties.Name="Copy"><mi:MaterialIcon Kind="ContentCopy" /></Button>
+                        <Button Classes="tool" Command="{Binding PasteCommand}" ToolTip.Tip="Paste (Ctrl+V)" AutomationProperties.Name="Paste"><mi:MaterialIcon Kind="ContentPaste" /></Button>
+                        <Button Classes="tool" Command="{Binding DeleteCommand}" ToolTip.Tip="Delete selection (Delete)" AutomationProperties.Name="Delete selection"><mi:MaterialIcon Kind="DeleteOutline" /></Button>
+                        <Rectangle Classes="toolDivider" />
+                        <Button Classes="tool" Command="{Binding ZoomOutCommand}" ToolTip.Tip="Zoom out" AutomationProperties.Name="Zoom out"><mi:MaterialIcon Kind="MagnifyMinusOutline" /></Button>
+                        <Button Classes="tool" Command="{Binding ZoomFitCommand}" ToolTip.Tip="Fit label to window" AutomationProperties.Name="Fit label to window"><mi:MaterialIcon Kind="ArrowExpandAll" /></Button>
+                        <Button Classes="tool" Command="{Binding ZoomInCommand}" ToolTip.Tip="Zoom in" AutomationProperties.Name="Zoom in"><mi:MaterialIcon Kind="MagnifyPlusOutline" /></Button>
+                        <Rectangle Classes="toolDivider" />
+                        <Button IsEnabled="{Binding !Editor.IsBlockReadOnly}" Classes="tool" Command="{Binding RotateLeftCommand}" ToolTip.Tip="Rotate label left 90°" AutomationProperties.Name="Rotate left"><mi:MaterialIcon Kind="RotateLeft" /></Button>
+                        <Button IsEnabled="{Binding !Editor.IsBlockReadOnly}" Classes="tool" Command="{Binding RotateRightCommand}" ToolTip.Tip="Rotate label right 90°" AutomationProperties.Name="Rotate right"><mi:MaterialIcon Kind="RotateRight" /></Button>
+                        <Rectangle Classes="toolDivider" />
+                        <Button IsEnabled="{Binding !Editor.IsBlockReadOnly}" Classes="tool" Click="OnManageParameters" ToolTip.Tip="Manage label parameters" AutomationProperties.Name="Manage parameters"><mi:MaterialIcon Kind="FunctionVariant" /></Button>
+                        <ToggleButton Classes="tool" IsChecked="{Binding Editor.ShowParameterReferences, Mode=TwoWay}" ToolTip.Tip="Show parameter IDs instead of values" AutomationProperties.Name="Show parameter references"><mi:MaterialIcon Kind="CodeBraces" /></ToggleButton>
+                        <Rectangle Classes="toolDivider" />
+                        <ComboBox Width="140" VerticalAlignment="Center" SelectedIndex="{Binding Editor.WorkspaceViewIndex, Mode=TwoWay}" ToolTip.Tip="Switch workspace view" AutomationProperties.Name="Workspace view">
+                            <ComboBoxItem Content="Design View" />
+                            <ComboBoxItem Content="Print View" />
+                        </ComboBox>
+                    </StackPanel>
+                </ScrollViewer>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center" Margin="12,0,0,0">
+                    <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{Binding Printer.IsConnected, Converter={StaticResource ConnDot}}" />
+                    <TextBlock Text="{Binding Printer.LoadedRollText}" MaxWidth="170" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTip.Tip="{Binding Printer.LoadedRollText}" />                    <Button Classes="tool" Click="OnPrintPreview" IsEnabled="{Binding !Printer.IsPrinting}" ToolTip.Tip="Print preview" AutomationProperties.Name="Print preview"><mi:MaterialIcon Kind="FileFindOutline" /></Button>
+                    <Button x:Name="PrintButton" Command="{Binding Printer.PrintButtonCommand}" Classes="accent" ToolTip.Tip="{Binding Printer.PrintButtonText}">
+                        <StackPanel Orientation="Horizontal" Spacing="7">
+                            <mi:MaterialIcon Kind="Printer" IsVisible="{Binding !Printer.IsPrinting}" />
+                            <mi:MaterialIcon Kind="StopCircleOutline" IsVisible="{Binding Printer.IsPrinting}" />
+                            <TextBlock Text="{Binding Printer.PrintButtonText}" VerticalAlignment="Center" />
+                        </StackPanel>
                     </Button>
-                    <Button Command="{Binding RotateRightCommand}" ToolTip.Tip="Rotate label right 90°">
-                        <mi:MaterialIcon Kind="RotateRight" Width="16" Height="16" />
-                    </Button>
-                </StackPanel>
-                <!-- Right: connected printer + remaining labels (from the RFID roll), then Print pinned far-right. -->
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="8,0,0,0">
-                    <Ellipse Width="9" Height="9" VerticalAlignment="Center"
-                             Fill="{Binding Printer.IsConnected, Converter={StaticResource ConnDot}}" />
-                    <TextBlock Text="{Binding Printer.LoadedRollText}" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center" />
-                    <Button x:Name="PrintButton" Content="{Binding Printer.PrintButtonText}" Command="{Binding Printer.PrintButtonCommand}" Classes="accent" />
-                    <!-- EvilGeniusLabs mark — far-right, matched to the Print button height; opens About (donate link). -->
-                    <Button Command="{Binding AboutCommand}" Padding="0" Background="Transparent" BorderThickness="0"
-                            Cursor="Hand" VerticalAlignment="Center" ToolTip.Tip="About Thermalith">
-                        <Image Source="/Assets/evilgenius.png"
-                               Height="{Binding #PrintButton.Bounds.Height}" />
-                    </Button>
+                    <Button Classes="tool" Command="{Binding AboutCommand}" ToolTip.Tip="About Thermalith" AutomationProperties.Name="About Thermalith"><mi:MaterialIcon Kind="InformationOutline" /></Button>
                 </StackPanel>
             </Grid>
         </Border>
-
+        <Border DockPanel.Dock="Top" Background="{DynamicResource SurfacePanel}" Padding="10,5" BorderBrush="{DynamicResource DividerWeak}" BorderThickness="0,0,0,1">
+            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                    <Button Classes="tool" Command="{Binding AlignLeftCommand}" ToolTip.Tip="Align left (select at least two elements)" AutomationProperties.Name="Align left"><mi:MaterialIcon Kind="AlignHorizontalLeft" /></Button>
+                    <Button Classes="tool" Command="{Binding AlignCenterHCommand}" ToolTip.Tip="Align horizontal centers (select at least two elements)" AutomationProperties.Name="Align horizontal centers"><mi:MaterialIcon Kind="AlignHorizontalCenter" /></Button>
+                    <Button Classes="tool" Command="{Binding AlignRightCommand}" ToolTip.Tip="Align right (select at least two elements)" AutomationProperties.Name="Align right"><mi:MaterialIcon Kind="AlignHorizontalRight" /></Button>
+                    <Button Classes="tool" Command="{Binding AlignTopCommand}" ToolTip.Tip="Align top (select at least two elements)" AutomationProperties.Name="Align top"><mi:MaterialIcon Kind="AlignVerticalTop" /></Button>
+                    <Button Classes="tool" Command="{Binding AlignMiddleVCommand}" ToolTip.Tip="Align vertical centers (select at least two elements)" AutomationProperties.Name="Align vertical centers"><mi:MaterialIcon Kind="AlignVerticalCenter" /></Button>
+                    <Button Classes="tool" Command="{Binding AlignBottomCommand}" ToolTip.Tip="Align bottom (select at least two elements)" AutomationProperties.Name="Align bottom"><mi:MaterialIcon Kind="AlignVerticalBottom" /></Button>
+                    <Rectangle Classes="toolDivider" />
+                    <Button Classes="tool" Command="{Binding GroupCommand}" ToolTip.Tip="Group selection" AutomationProperties.Name="Group selection"><mi:MaterialIcon Kind="Group" /></Button>
+                    <Button Classes="tool" Command="{Binding UngroupCommand}" ToolTip.Tip="Ungroup selection" AutomationProperties.Name="Ungroup selection"><mi:MaterialIcon Kind="Ungroup" /></Button>
+                    <Rectangle Classes="toolDivider" />
+                    <TextBlock Text="ƒ Parameter-linked elements" Foreground="#22A9AE" Classes="toolbarLabel" />
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
         <!-- Status bar -->
         <Border DockPanel.Dock="Bottom" Background="{DynamicResource SurfaceBar}" Padding="8,3">
             <Grid ColumnDefinitions="Auto,*,Auto">
                 <TextBlock Text="{Binding Editor.StatusText}" Foreground="{DynamicResource TextPrimary}" />
                 <TextBlock Grid.Column="1" Text="{Binding StatusMessage, UpdateSourceTrigger=PropertyChanged}" Foreground="{DynamicResource TextInfo}" HorizontalAlignment="Center" />
-                <TextBlock Grid.Column="2" Text="{Binding Editor.Dirty, StringFormat='dirty: {0}'}" Foreground="{DynamicResource TextHint}" />
+                <TextBlock Grid.Column="2" Text="{Binding Editor.DocumentStateText}" Foreground="{DynamicResource TextHint}" />
             </Grid>
         </Border>
 
@@ -395,43 +438,43 @@
             <DockPanel Grid.Column="0" Background="{DynamicResource SurfacePanel}">
                 <TextBlock DockPanel.Dock="Top" Text="Insert" Margin="8,6,8,2" FontWeight="Bold" Foreground="{DynamicResource TextStrong}" />
                 <StackPanel DockPanel.Dock="Top" Margin="6,0,6,6">
-                    <Button Classes="insert" Command="{Binding InsertCommand}" CommandParameter="text">
+                    <Button IsEnabled="{Binding !Editor.IsBlockReadOnly}" Classes="insert" Command="{Binding InsertCommand}" CommandParameter="text">
                         <StackPanel Orientation="Horizontal" Spacing="8"><mi:MaterialIcon Kind="FormatText" /><TextBlock Text="Text" VerticalAlignment="Center" /></StackPanel>
                     </Button>
-                    <Button Classes="insert" Command="{Binding InsertCommand}" CommandParameter="barcode">
+                    <Button IsEnabled="{Binding !Editor.IsBlockReadOnly}" Classes="insert" Command="{Binding InsertCommand}" CommandParameter="barcode">
                         <StackPanel Orientation="Horizontal" Spacing="8"><mi:MaterialIcon Kind="Barcode" /><TextBlock Text="Barcode" VerticalAlignment="Center" /></StackPanel>
                     </Button>
-                    <Button Classes="insert" Command="{Binding InsertCommand}" CommandParameter="qr">
+                    <Button IsEnabled="{Binding !Editor.IsBlockReadOnly}" Classes="insert" Command="{Binding InsertCommand}" CommandParameter="qr">
                         <StackPanel Orientation="Horizontal" Spacing="8"><mi:MaterialIcon Kind="Qrcode" /><TextBlock Text="QR Code" VerticalAlignment="Center" /></StackPanel>
                     </Button>
-                    <Button Classes="insert" Command="{Binding InsertCommand}" CommandParameter="serial">
-                        <StackPanel Orientation="Horizontal" Spacing="8"><mi:MaterialIcon Kind="Counter" /><TextBlock Text="Serial" VerticalAlignment="Center" /></StackPanel>
-                    </Button>
-                    <Button Classes="insert" Command="{Binding InsertCommand}" CommandParameter="datetime">
+                    <Button IsEnabled="{Binding !Editor.IsBlockReadOnly}" Classes="insert" Command="{Binding InsertCommand}" CommandParameter="datetime">
                         <StackPanel Orientation="Horizontal" Spacing="8"><mi:MaterialIcon Kind="CalendarClock" /><TextBlock Text="Date / Time" VerticalAlignment="Center" /></StackPanel>
                     </Button>
-                    <Button Classes="insert" Command="{Binding InsertCommand}" CommandParameter="shape">
+                    <Button IsEnabled="{Binding !Editor.IsBlockReadOnly}" Classes="insert" Command="{Binding InsertCommand}" CommandParameter="shape">
                         <StackPanel Orientation="Horizontal" Spacing="8"><mi:MaterialIcon Kind="ShapeOutline" /><TextBlock Text="Shape" VerticalAlignment="Center" /></StackPanel>
                     </Button>
-                    <Button Classes="insert" Command="{Binding InsertCommand}" CommandParameter="line">
+                    <Button IsEnabled="{Binding !Editor.IsBlockReadOnly}" Classes="insert" Command="{Binding InsertCommand}" CommandParameter="line">
                         <StackPanel Orientation="Horizontal" Spacing="8"><mi:MaterialIcon Kind="VectorLine" Width="15" Height="15" Foreground="{DynamicResource IconStroke}" /><TextBlock Text="Line" VerticalAlignment="Center" /></StackPanel>
                     </Button>
-                    <Button Classes="insert" Command="{Binding InsertCommand}" CommandParameter="image">
+                    <Button IsEnabled="{Binding !Editor.IsBlockReadOnly}" Classes="insert" Command="{Binding InsertCommand}" CommandParameter="image">
                         <StackPanel Orientation="Horizontal" Spacing="8"><mi:MaterialIcon Kind="ImageOutline" /><TextBlock Text="Image" VerticalAlignment="Center" /></StackPanel>
                     </Button>
-                    <Button Classes="insert" Name="ClipArtButton" Command="{Binding ToggleClipPaletteCommand}">
+                    <Button IsEnabled="{Binding !Editor.IsBlockReadOnly}" Classes="insert" Name="ClipArtButton" Command="{Binding ToggleClipPaletteCommand}">
                         <StackPanel Orientation="Horizontal" Spacing="8"><mi:MaterialIcon Kind="Sticker" Width="15" Height="15" Foreground="{DynamicResource IconStroke}" /><TextBlock Text="Clip Art" VerticalAlignment="Center" /></StackPanel>
                     </Button>
                     <Popup IsOpen="{Binding ClipPaletteOpen}" PlacementTarget="{Binding #ClipArtButton}"
                            Placement="Right" HorizontalOffset="6" IsLightDismissEnabled="False">
                         <views:ClipPalette DataContext="{Binding ClipPalette}" />
                     </Popup>
-                    <Button Classes="insert" Command="{Binding InsertCommand}" CommandParameter="table">
+                    <Button IsEnabled="{Binding !Editor.IsBlockReadOnly}" Classes="insert" Command="{Binding InsertCommand}" CommandParameter="table">
                         <StackPanel Orientation="Horizontal" Spacing="8"><mi:MaterialIcon Kind="Table" /><TextBlock Text="Table" VerticalAlignment="Center" /></StackPanel>
+                    </Button>
+                    <Button IsEnabled="{Binding !Editor.IsBlockReadOnly}" Classes="insert" Click="OnCustomBlocks" AutomationProperties.Name="Insert custom block" ToolTip.Tip="Browse the custom block library and insert a linked block">
+                        <StackPanel Orientation="Horizontal" Spacing="8"><mi:MaterialIcon Kind="ViewModule" /><TextBlock Text="Custom block" VerticalAlignment="Center" /></StackPanel>
                     </Button>
                 </StackPanel>
                 <TextBlock DockPanel.Dock="Top" Text="Elements" Margin="8,2" FontWeight="Bold" Foreground="{DynamicResource TextStrong}" />
-                <ListBox ItemsSource="{Binding Editor.Layers}" SelectedItem="{Binding Editor.SelectedLayer}"
+                <ListBox IsEnabled="{Binding !Editor.IsBlockReadOnly}" ItemsSource="{Binding Editor.Layers}" SelectedItem="{Binding Editor.SelectedLayer}"
                          SelectionChanged="OnElementsListSelectionChanged"
                          PointerPressed="OnElementsListPointerPressed">
                     <ListBox.ItemTemplate>
@@ -467,7 +510,7 @@
                 <Border Grid.Row="0" Grid.Column="0" Background="{DynamicResource SurfacePanel}" />
                 <views:Ruler Grid.Row="0" Grid.Column="1" x:Name="TopRuler" Orientation="Horizontal" />
                 <views:Ruler Grid.Row="1" Grid.Column="0" x:Name="LeftRuler" Orientation="Vertical" />
-                <ScrollViewer Grid.Row="1" Grid.Column="1" x:Name="CanvasScroll" Background="{DynamicResource SurfaceCanvas}"
+                <ScrollViewer IsEnabled="{Binding !Editor.IsBlockReadOnly}" Grid.Row="1" Grid.Column="1" x:Name="CanvasScroll" Background="{DynamicResource SurfaceCanvas}"
                           HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                           PointerPressed="OnCanvasBackgroundPressed">
                 <Border Padding="24" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -541,14 +584,14 @@
                             </ContextMenu>
                         </Panel.ContextMenu>
                         <Path Data="{Binding Editor.LabelOutlineGeometry}" Fill="White" IsHitTestVisible="False" />
-                        <Image Source="{Binding Editor.Preview}" Stretch="Fill"
-                               Clip="{Binding Editor.LabelOutlineGeometry}" RenderOptions.BitmapInterpolationMode="None" />
+                        <Image x:Name="LabelPreviewImage" Source="{Binding Editor.Preview}" Stretch="Fill"
+                               Clip="{Binding Editor.LabelOutlineGeometry}" RenderOptions.BitmapInterpolationMode="HighQuality" />
                         <Path Data="{Binding Editor.LabelOutlineGeometry}" Stroke="#888888" StrokeThickness="1" IsHitTestVisible="False" />
                         <Path Data="{Binding Editor.PrintableOutlineGeometry}" Stroke="#E6972A" StrokeThickness="1"
-                              StrokeDashArray="4,3" IsVisible="{Binding Editor.ShowSafeArea}" IsHitTestVisible="False"
+                              StrokeDashArray="4,3" IsVisible="{Binding Editor.ShowWorkspaceGuides}" IsHitTestVisible="False"
                               Clip="{Binding Editor.LabelOutlineGeometry}" />
                         <views:GridOverlay Spacing="{Binding Editor.GridSpacingDisplay}"
-                                           IsVisible="{Binding Editor.ShowGrid}" Clip="{Binding Editor.LabelOutlineGeometry}" />
+                                           IsVisible="{Binding Editor.ShowWorkspaceGrid}" Clip="{Binding Editor.LabelOutlineGeometry}" />
                         <!-- Print-area boundary is now drawn as full-span lines by PrintGuideOverlay
                              (over the whole viewport), not a box hugging the label. -->
                         <Canvas>
@@ -600,7 +643,64 @@
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
-                        <!-- Edit-mode indicator: distinct accent frame around the whole table. -->
+                        <!-- Nonprinting cell guides for tables whose printed line width is zero. -->
+                        <ItemsControl ItemsSource="{Binding Editor.TableGuides}" IsVisible="{Binding !Editor.IsPrintView}" IsHitTestVisible="False" Clip="{Binding Editor.LabelOutlineGeometry}">
+                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                            <ItemsControl.Styles>
+                                <Style Selector="ContentPresenter" x:DataType="vm:SelRect">
+                                    <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                                    <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                                </Style>
+                            </ItemsControl.Styles>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:SelRect">
+                                    <Rectangle Width="{Binding Width}" Height="{Binding Height}" Stroke="#888888" StrokeThickness="0.7" StrokeDashArray="1,3">
+                                        <Rectangle.RenderTransform><RotateTransform Angle="{Binding Angle}" CenterX="{Binding CenterX}" CenterY="{Binding CenterY}" /></Rectangle.RenderTransform>
+                                    </Rectangle>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>                        <ItemsControl ItemsSource="{Binding Editor.SmartGuides}" IsHitTestVisible="False">
+                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:SmartGuide">
+                                    <Line StartPoint="{Binding Start}" EndPoint="{Binding End}" Stroke="#ED56B4" StrokeThickness="1" StrokeDashArray="4,3" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>                        <ItemsControl ItemsSource="{Binding Editor.SpacingGuides}" IsHitTestVisible="False">
+                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:SpacingGuideVisual">
+                                    <Canvas>
+                                        <Line StartPoint="{Binding Start}" EndPoint="{Binding End}" Stroke="#008B98" StrokeThickness="1" />
+                                        <Line StartPoint="{Binding TickAStart}" EndPoint="{Binding TickAEnd}" Stroke="#008B98" StrokeThickness="1" />
+                                        <Line StartPoint="{Binding TickBStart}" EndPoint="{Binding TickBEnd}" Stroke="#008B98" StrokeThickness="1" />
+                                        <Border Canvas.Left="{Binding LabelX}" Canvas.Top="{Binding LabelY}" Background="#EFFFFFFF" CornerRadius="3" Padding="3,1">
+                                            <TextBlock Text="{Binding Label}" FontSize="11" Foreground="#006B76" />
+                                        </Border>
+                                    </Canvas>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>                        <!-- Editor-only parameter marks; never included in the print raster. -->
+                        <ItemsControl ItemsSource="{Binding Editor.ParameterCues}" IsVisible="{Binding !Editor.IsPrintView}" IsHitTestVisible="False">
+                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                            <ItemsControl.Styles>
+                                <Style Selector="ContentPresenter" x:DataType="vm:ParameterCue">
+                                    <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                                    <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                                </Style>
+                            </ItemsControl.Styles>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:ParameterCue">
+                                    <Panel Width="{Binding Width}" Height="{Binding Height}" RenderTransformOrigin="50%,50%">
+                                        <Panel.RenderTransform><RotateTransform Angle="{Binding Angle}" /></Panel.RenderTransform>
+                                        <Rectangle Stroke="#008F95" StrokeThickness="1" StrokeDashArray="3,3" />
+                                        <Border Background="#E0006C70" CornerRadius="3" Padding="4,1" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0,-20,0,0">
+                                            <TextBlock Text="{Binding Label}" Foreground="White" FontSize="11" />
+                                        </Border>
+                                    </Panel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>                        <!-- Edit-mode indicator: distinct accent frame around the whole table. -->
                         <Canvas IsVisible="{Binding Editor.InCellMode}" IsHitTestVisible="False">
                             <Rectangle Canvas.Left="{Binding Editor.CellModeFrame.X}" Canvas.Top="{Binding Editor.CellModeFrame.Y}"
                                        Width="{Binding Editor.CellModeFrame.Width}" Height="{Binding Editor.CellModeFrame.Height}"
@@ -662,7 +762,7 @@
                 </ScrollViewer>
                 <!-- Print-area guide lines, spanning the canvas viewport; origin/scale synced in code-behind. -->
                 <views:PrintGuideOverlay Grid.Row="1" Grid.Column="1" x:Name="PrintGuide"
-                                         IsVisible="{Binding Editor.ShowSafeArea}"
+                                         IsVisible="{Binding Editor.ShowWorkspaceGuides}"
                                          InsetXMm="{Binding Editor.PrintableInsetXMm}"
                                          InsetYMm="{Binding Editor.PrintableInsetYMm}"
                                          LabelWidthMm="{Binding Editor.CanvasWidthMm}"
@@ -691,7 +791,7 @@
             <GridSplitter Grid.Column="3" Width="4" Background="{DynamicResource SurfaceSplitter}" />
 
             <!-- RIGHT: inspector + printer tabs -->
-            <TabControl x:Name="InspectorTabs" Grid.Column="4" Background="{DynamicResource SurfacePanel}">
+            <TabControl IsEnabled="{Binding !Editor.IsBlockReadOnly}" x:Name="InspectorTabs" Grid.Column="4" Background="{DynamicResource SurfacePanel}">
                 <TabItem Header="Properties">
                     <ScrollViewer Padding="8" HorizontalScrollBarVisibility="Disabled"
                                   VerticalScrollBarVisibility="Auto" ScrollViewer.AllowAutoHide="False">
@@ -701,7 +801,6 @@
                             <TextBlock Text="Table" FontWeight="Bold" Margin="0,0,0,2" />
                             <Grid Classes="frow" ColumnDefinitions="70,*"><TextBlock Text="Cols" /><NumericUpDown Grid.Column="1" Value="{Binding Editor.((ed:TableEditorViewModel)SelectedEditor).Cols, Converter={StaticResource Nz}}" Minimum="1" FormatString="0" /></Grid>
                             <Grid Classes="frow" ColumnDefinitions="70,*"><TextBlock Text="Rows" /><NumericUpDown Grid.Column="1" Value="{Binding Editor.((ed:TableEditorViewModel)SelectedEditor).Rows, Converter={StaticResource Nz}}" Minimum="1" FormatString="0" /></Grid>
-                            <Grid Classes="frow" ColumnDefinitions="70,*"><TextBlock Text="Line Weight" /><NumericUpDown Grid.Column="1" Value="{Binding Editor.((ed:TableEditorViewModel)SelectedEditor).BorderWidthMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" /></Grid>
                             <TextBlock Classes="section" Text="Cell" />
                             <Grid Classes="frow" ColumnDefinitions="90,*">
                                 <TextBlock Text="Font" />
@@ -731,6 +830,7 @@
                                 <Rectangle Width="1" Fill="{DynamicResource DividerWeak}" Margin="3,2" />
                                 <ToggleButton Classes="icon" ToolTip.Tip="Bold" IsChecked="{Binding Editor.CellBold}"><mi:MaterialIcon Kind="FormatBold" /></ToggleButton>
                                 <ToggleButton Classes="icon" ToolTip.Tip="Italic" IsChecked="{Binding Editor.CellItalic}"><mi:MaterialIcon Kind="FormatItalic" /></ToggleButton>
+                                <ToggleButton Classes="icon" ToolTip.Tip="Underline" IsChecked="{Binding Editor.CellUnderline}"><mi:MaterialIcon Kind="FormatUnderline" /></ToggleButton>
                             </StackPanel>
                             <TextBlock Classes="section" Text="Align" />
                             <StackPanel Orientation="Horizontal" Spacing="3">
@@ -742,6 +842,7 @@
                                 <ToggleButton Classes="icon" ToolTip.Tip="Middle" IsChecked="{Binding Editor.CellAlignV, Converter={StaticResource Eq}, ConverterParameter=middle}"><mi:MaterialIcon Kind="AlignVerticalCenter" /></ToggleButton>
                                 <ToggleButton Classes="icon" ToolTip.Tip="Bottom" IsChecked="{Binding Editor.CellAlignV, Converter={StaticResource Eq}, ConverterParameter=bottom}"><mi:MaterialIcon Kind="AlignVerticalBottom" /></ToggleButton>
                             </StackPanel>
+                            <views:TableBorderControls />
                             <TextBlock Classes="section" Text="Header" />
                             <StackPanel Orientation="Horizontal" Spacing="4">
                                 <ToggleButton Content="Row" IsChecked="{Binding Editor.CellHeaderRow}" />
@@ -756,28 +857,35 @@
                         <ContentControl.DataTemplates>
 
                             <DataTemplate DataType="ed:CanvasEditorViewModel">
-                                <StackPanel Spacing="2">
-                                    <TextBlock Text="Label" FontWeight="Bold" Margin="0,0,0,4" />
-                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="The label's name — used as the file-name suggestion and in the title bar. Doesn't print."><TextBlock Text="Name" /><TextBox Grid.Column="1" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" /></Grid>
-                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Physical label width in mm (the media's printable width). Usually set automatically from the loaded roll."><TextBlock Text="Width mm" /><NumericUpDown Grid.Column="1" Value="{Binding WidthMm, Converter={StaticResource Nz}}" Minimum="1" /></Grid>
-                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Physical label height in mm (the feed length). Usually set automatically from the loaded roll."><TextBlock Text="Height mm" /><NumericUpDown Grid.Column="1" Value="{Binding HeightMm, Converter={StaticResource Nz}}" Minimum="1" /></Grid>
-                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Print resolution (dots per inch). Seeded from the connected printer — 203 for most NIIMBOT models."><TextBlock Text="DPI" /><NumericUpDown Grid.Column="1" Value="{Binding Dpi, Converter={StaticResource Nz}}" Minimum="50" FormatString="0" /></Grid>
-                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Label outline shape: rectangle, rounded rectangle, or circle. Used for the safe-area guide and round-label rendering."><TextBlock Text="Shape" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.CanvasShape}" SelectedItem="{Binding Shape}" /></Grid>
-                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Corner radius (mm) when Shape is rounded. 0 = square corners."><TextBlock Text="Corner mm" /><NumericUpDown Grid.Column="1" Value="{Binding CornerRadiusMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" /></Grid>
-                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Print orientation. Rotates the printed output 90/180/270° onto the physical label; the canvas reshapes to match. Same as the toolbar rotate buttons."><TextBlock Text="Orient°" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.Orientation}" SelectedItem="{Binding OrientationDeg}" /></Grid>
-                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Bleed margin (mm) outside the label edge. The validator warns when content sits past it — used for deliberate over-print onto continuous media."><TextBlock Text="Bleed mm" /><NumericUpDown Grid.Column="1" Value="{Binding BleedMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" /></Grid>
-                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="The printer's maximum print width (mm). Content wider than this is cropped at print (the printable-area guide shows the limit). Blank = auto from the connected printer."><TextBlock Text="Printhead W" /><NumericUpDown Grid.Column="1" Value="{Binding PrintheadWidthMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" Watermark="auto" /></Grid>
+                                <StackPanel Spacing="2" IsEnabled="{Binding !ReadOnlyContext}">
+                                    <TextBlock Text="Design" FontWeight="Bold" Margin="0,0,0,4" />
+                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Name of this saved design, used as the file-name suggestion. This is not the physical label stock name and does not print."><TextBlock Text="Design name" /><TextBox Grid.Column="1" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" /></Grid>
+                                    <TextBlock Classes="section" Text="Label format" />
+                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="The physical label stock name. Saved separately from the design name."><TextBlock Text="Stock name" /><Grid Grid.Column="1" ColumnDefinitions="*,Auto"><ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding StockChoices}" SelectedItem="{Binding StockName}" PlaceholderText="Select label stock" /><Button Grid.Column="1" Content="Edit" Margin="5,0,0,0" Command="{Binding $parent[Window].((vm:MainWindowViewModel)DataContext).EditDesignStockCommand}" ToolTip.Tip="Edit this design's saved stock, including shape and corners. No printer connection required." /></Grid></Grid>
+                                    <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Layout" /><ComboBox Grid.Column="1" HorizontalAlignment="Stretch" ItemsSource="{Binding LayoutChoices}" SelectedItem="{Binding Layout}" /></Grid>
+                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Physical label width in mm (the media's printable width). Usually set automatically from the loaded roll."><TextBlock Text="Width mm" /><NumericUpDown Grid.Column="1" Value="{Binding WidthMm, Converter={StaticResource Nz}}" Minimum="1" IsEnabled="False" /></Grid>
+                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Physical label height in mm (the feed length). Usually set automatically from the loaded roll."><TextBlock Text="Height mm" /><NumericUpDown Grid.Column="1" Value="{Binding HeightMm, Converter={StaticResource Nz}}" Minimum="1" IsEnabled="False" /></Grid>
+                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Label outline shape: rectangle, rounded rectangle, or circle. Used for the safe-area guide and round-label rendering."><TextBlock Text="Shape" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.CanvasShape}" SelectedItem="{Binding Shape}" IsEnabled="False" /></Grid>
+                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Corner radius (mm) when Shape is rounded. 0 = square corners."><TextBlock Text="Corner mm" /><NumericUpDown Grid.Column="1" IsEnabled="False" Value="{Binding CornerRadiusMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" /></Grid>
+                                    <TextBlock Classes="section" Text="Print settings" />
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Soft safe margin (mm) inset on every edge — a guide to keep content clear of this printer's skew/registration (e.g. the B4's ~1 mm). It's a guide only: nothing crops to it, you can place a control outside if you choose. 0 = off."><TextBlock Text="Margin mm" /><NumericUpDown Grid.Column="1" Value="{Binding SafeMarginMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" /></Grid>
                                     <TextBlock Text="Margin guide = your safe margin on all edges, floored at the printhead crop on the width axis. Guides only — nothing is cropped to the margin." Foreground="{DynamicResource TextHint}" FontSize="11" TextWrapping="Wrap" Margin="0,4" />
-                                </StackPanel>
-                            </DataTemplate>
+                                <Expander Header="Advanced print settings" IsExpanded="False"><StackPanel Spacing="2">
+                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Print orientation. Rotates the printed output 90/180/270° onto the physical label; the canvas reshapes to match. Same as the toolbar rotate buttons."><TextBlock Text="Orient°" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.Orientation}" SelectedItem="{Binding OrientationDeg}" /></Grid>
+                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Print resolution (dots per inch). Seeded from the connected printer — 203 for most NIIMBOT models."><TextBlock Text="DPI" /><NumericUpDown Grid.Column="1" Value="{Binding Dpi, Converter={StaticResource Nz}}" Minimum="50" FormatString="0" /></Grid>
+                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Bleed margin (mm) outside the label edge. The validator warns when content sits past it — used for deliberate over-print onto continuous media."><TextBlock Text="Bleed mm" /><NumericUpDown Grid.Column="1" Value="{Binding BleedMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" /></Grid>
+                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="The printer's maximum print width (mm). Content wider than this is cropped at print (the printable-area guide shows the limit). Blank = auto from the connected printer."><TextBlock Text="Printhead W" /><NumericUpDown Grid.Column="1" Value="{Binding PrintheadWidthMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" Watermark="auto" /></Grid>
+</StackPanel></Expander>
+</StackPanel>
+
+</DataTemplate>
 
                             <DataTemplate DataType="ed:TextEditorViewModel">
                                 <StackPanel Spacing="2">
                                     <views:BaseElementFields />
 
                                     <TextBlock Classes="section" Text="Content" />
-                                    <TextBox Text="{Binding Content, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="48"
+                                    <views:ExpandingTextBox Text="{Binding Content, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="48" MaxHeight="240" ScrollViewer.VerticalScrollBarVisibility="Auto"
                                              ToolTip.Tip="The text to print. Use {token} placeholders for data-merge fields; Enter adds a line break." />
 
                                     <TextBlock Classes="section" Text="Font" />
@@ -808,12 +916,24 @@
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Barcode symbology (Code128, EAN-13, …). Pick the one your scanner/system expects; some require a specific value length."><TextBlock Text="Symbology" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.Symbology}" SelectedItem="{Binding Symbology}" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="The data to encode in the barcode. Must be valid for the chosen symbology (e.g. EAN-13 needs 12–13 digits)."><TextBlock Text="Value" /><TextBox Grid.Column="1" Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}" /></Grid>
                                     <CheckBox IsChecked="{Binding ShowText}" Content="Show text" Margin="0,4" ToolTip.Tip="Print the human-readable value beneath/above the bars." />
-                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Where the human-readable text sits relative to the bars (above / below). Only used when Show text is on."><TextBlock Text="Text pos" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.TextPosition}" SelectedItem="{Binding TextPosition}" /></Grid>
+                                    <Grid IsEnabled="{Binding ShowText}" Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Where the human-readable text sits relative to the bars (above / below). Only used when Show text is on."><TextBlock Text="Text pos" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.TextPosition}" SelectedItem="{Binding TextPosition}" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Width of the narrowest bar (the 'module'). Larger = a wider, more scannable barcode; too small may not scan."><TextBlock Text="Module mm" /><NumericUpDown Grid.Column="1" Value="{Binding ModuleWidthMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Quiet mm" ToolTip.Tip="Blank margin on each side of the barcode, required for reliable scanning." /><NumericUpDown Grid.Column="1" Value="{Binding QuietZoneMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" ToolTip.Tip="Blank margin on each side of the barcode, required for reliable scanning." /></Grid>
                                 </StackPanel>
                             </DataTemplate>
 
+                            <DataTemplate DataType="ed:BlockEditorViewModel">
+                                <StackPanel Spacing="8">
+                                    <TextBlock Text="Linked custom block" FontWeight="Bold" />
+                                    <TextBlock Text="Contents are read-only; move this block as one element. Parameter values belong to this design. Shared edits require deliberate unlocking." TextWrapping="Wrap" MaxWidth="260" />
+                                    <Grid ColumnDefinitions="70,*"><TextBlock Text="Name" /><TextBox Grid.Column="1" Text="{Binding Name}" /></Grid>
+                                    <Grid ColumnDefinitions="70,*"><TextBlock Text="X mm" /><NumericUpDown Grid.Column="1" Value="{Binding X}" Increment="0.1" /></Grid>
+                                    <Grid ColumnDefinitions="70,*"><TextBlock Text="Y mm" /><NumericUpDown Grid.Column="1" Value="{Binding Y}" Increment="0.1" /></Grid>
+                                    <Button Content="Unlock and edit block in place..." Command="{Binding $parent[Window].((vm:MainWindowViewModel)DataContext).EditBlockInPlaceCommand}" />
+                                    <Button Content="Edit design parameter values..." Click="OnManageParameters" />
+                                    <Button Content="Custom block library..." Click="OnManageCustomBlocks" />
+                                </StackPanel>
+                            </DataTemplate>
                             <DataTemplate DataType="ed:QrEditorViewModel">
                                 <StackPanel Spacing="2">
                                     <views:BaseElementFields />
@@ -821,7 +941,7 @@
                                     <CheckBox Content="Keep QR square when resizing" IsChecked="{Binding LockAspect}" />
                                     <Button Content="Make square / Auto module size" Command="{Binding MakeSquareCommand}" />
 
-                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="The data to encode in the QR code — text, a URL, etc."><TextBlock Text="Value" /><TextBox Grid.Column="1" Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}" /></Grid>
+                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="The data to encode in the QR code. Press Enter to add a new line; line breaks are included in the encoded value."><TextBlock Text="Value" /><views:ExpandingTextBox Grid.Column="1" MinHeight="48" MaxHeight="240" AcceptsReturn="True" TextWrapping="Wrap" ScrollViewer.VerticalScrollBarVisibility="Auto" Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Character encoding for the QR payload (e.g. UTF-8 / byte). Use the default unless the target reader needs a specific mode."><TextBlock Text="Encoding" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.QrEncoding}" SelectedItem="{Binding Encoding}" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Error-correction level — higher recovers from more damage/smudging but makes the code denser. L≈7%, M≈15%, Q≈25%, H≈30%."><TextBlock Text="EC level" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.EcLevel}" SelectedItem="{Binding EcLevel}" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Module mm" /><NumericUpDown Grid.Column="1" Value="{Binding ModuleSizeMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" Watermark="auto" /></Grid>
@@ -839,8 +959,9 @@
                                         <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Gap mm" /><NumericUpDown Grid.Column="1" Value="{Binding TextGapMm, Converter={StaticResource Nz}}" Minimum="0" Maximum="50" Increment="0.1" FormatString="0.0#" /></Grid>
                                         <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Char spacing" /><NumericUpDown Grid.Column="1" Value="{Binding TextLetterSpacing, Converter={StaticResource Nz}}" Minimum="-10" Maximum="50" Increment="0.1" FormatString="0.0#" /></Grid>
                                         <StackPanel Orientation="Horizontal" Spacing="10">
-                                            <CheckBox Content="Bold" IsChecked="{Binding TextBold}" />
-                                            <CheckBox Content="Italic" IsChecked="{Binding TextItalic}" />
+                                            <ToggleButton Classes="icon" ToolTip.Tip="Bold" IsChecked="{Binding TextBold}"><mi:MaterialIcon Kind="FormatBold" /></ToggleButton>
+                                            <ToggleButton Classes="icon" ToolTip.Tip="Italic" IsChecked="{Binding TextItalic}"><mi:MaterialIcon Kind="FormatItalic" /></ToggleButton>
+                                            <ToggleButton Classes="icon" ToolTip.Tip="Underline" IsChecked="{Binding TextUnderline}"><mi:MaterialIcon Kind="FormatUnderline" /></ToggleButton>
                                         </StackPanel>
                                     </StackPanel>
                                 </StackPanel>
@@ -874,7 +995,7 @@
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Shape to draw: rectangle, rounded rectangle, ellipse, or line."><TextBlock Text="Shape" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.ShapeType}" SelectedItem="{Binding ShapeType}" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Outline thickness in mm. 0 = no outline (use Fill = solid for a filled shape)."><TextBlock Text="Stroke mm" /><NumericUpDown Grid.Column="1" Value="{Binding StrokeWidthMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="none = outline only; solid = filled black."><TextBlock Text="Fill" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.Fill}" SelectedItem="{Binding Fill}" /></Grid>
-                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Corner radius (mm) for a rounded rectangle. 0 = sharp corners. Ignored for ellipse."><TextBlock Text="Corner mm" /><NumericUpDown Grid.Column="1" Value="{Binding CornerRadiusMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" /></Grid>
+                                    <Grid IsEnabled="{Binding ShapeType, Converter={StaticResource Eq}, ConverterParameter=roundedRect}" Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Corner radius (mm) for a rounded rectangle. 0 = sharp corners. Ignored for ellipse."><TextBlock Text="Corner mm" /><NumericUpDown Grid.Column="1" Value="{Binding CornerRadiusMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" /></Grid>
                                 </StackPanel>
                             </DataTemplate>
 
@@ -919,7 +1040,7 @@
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="The packaged image asset this element draws. Set by 'Choose image…'; rarely edited by hand."><TextBlock Text="Asset id" /><TextBox Grid.Column="1" Text="{Binding AssetId, UpdateSourceTrigger=PropertyChanged}" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="How the image fills its box: fill (cover, may crop), fit (whole image, may letterbox), stretch (distort to box), center (no scale)."><TextBlock Text="Fit" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.Fit}" SelectedItem="{Binding Fit}" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="How the image is reduced to 1-bit black/white for the thermal head: threshold = hard cut; Floyd–Steinberg / Atkinson / ordered = dot patterns that fake grey shading."><TextBlock Text="Dither" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.Dither}" SelectedItem="{Binding Dither}" /></Grid>
-                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Black/white cutoff (0–255), used only when Dither = threshold. Lower = more pixels turn black."><TextBlock Text="Threshold" /><NumericUpDown Grid.Column="1" Value="{Binding Threshold, Converter={StaticResource Nz}}" Minimum="0" Maximum="255" FormatString="0" /></Grid>
+                                    <Grid IsEnabled="{Binding Dither, Converter={StaticResource Eq}, ConverterParameter=threshold}" Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Black/white cutoff (0–255), used only when Dither = threshold. Lower = more pixels turn black."><TextBlock Text="Threshold" /><NumericUpDown Grid.Column="1" Value="{Binding Threshold, Converter={StaticResource Nz}}" Minimum="0" Maximum="255" FormatString="0" /></Grid>
                                     <CheckBox IsChecked="{Binding Invert}" Content="Invert" Margin="0,4" ToolTip.Tip="Swap black and white in the output." />
                                     <TextBlock Text="Transform" Foreground="{DynamicResource TextSecondary}" Margin="0,4,0,0" />
                                     <StackPanel Orientation="Horizontal" Spacing="4">
@@ -936,8 +1057,26 @@
                                     <views:BaseElementFields />
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Number of columns. Changing it adds/removes columns from the right."><TextBlock Text="Cols" /><NumericUpDown Grid.Column="1" Value="{Binding Cols, Converter={StaticResource Nz}}" Minimum="1" FormatString="0" /></Grid>
                                     <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Number of rows. Changing it adds/removes rows from the bottom."><TextBlock Text="Rows" /><NumericUpDown Grid.Column="1" Value="{Binding Rows, Converter={StaticResource Nz}}" Minimum="1" FormatString="0" /></Grid>
-                                    <Grid Classes="frow" ColumnDefinitions="90,*" ToolTip.Tip="Grid line / border thickness in mm. 0 = no borders."><TextBlock Text="Line Weight" /><NumericUpDown Grid.Column="1" Value="{Binding BorderWidthMm, Converter={StaticResource Nz}}" Increment="0.1" Minimum="0" /></Grid>
-                                    <TextBlock Text="Double-click the table to edit cells (select, type, merge, fill, header)."
+                                    <StackPanel DataContext="{Binding $parent[Window].DataContext}" x:DataType="vm:MainWindowViewModel" Spacing="4">
+                                        <TextBlock Classes="section" Text="Text — whole table" />
+                                        <TextBlock Text="Changes below apply to every cell." FontSize="11" Foreground="{DynamicResource TextHint}" />
+                                        <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Font" /><ComboBox Classes="fld" Grid.Column="1" ItemsSource="{x:Static ed:EditorOptions.CellFontItems}" SelectedValueBinding="{ReflectionBinding Content}" SelectedValue="{Binding Editor.CellFontFamily, Mode=OneWay}" Tag="cell" DropDownOpened="OnFontDropDownOpened" SelectionChanged="OnFontSelectionChanged" /></Grid>
+                                        <Grid Classes="frow" ColumnDefinitions="90,*"><TextBlock Text="Size pt" /><NumericUpDown Grid.Column="1" Value="{Binding Editor.CellFontSizePt, Converter={StaticResource Nz}}" Minimum="1" Maximum="500" Watermark="table default" /></Grid>
+                                        <StackPanel Orientation="Horizontal" Spacing="3">
+                                            <ToggleButton Classes="icon" ToolTip.Tip="Bold" IsChecked="{Binding Editor.CellBold}"><mi:MaterialIcon Kind="FormatBold" /></ToggleButton>
+                                            <ToggleButton Classes="icon" ToolTip.Tip="Italic" IsChecked="{Binding Editor.CellItalic}"><mi:MaterialIcon Kind="FormatItalic" /></ToggleButton>
+                                            <ToggleButton Classes="icon" ToolTip.Tip="Underline" IsChecked="{Binding Editor.CellUnderline}"><mi:MaterialIcon Kind="FormatUnderline" /></ToggleButton>
+                                        </StackPanel>
+                                        <StackPanel Orientation="Horizontal" Spacing="3">
+                                            <ToggleButton Classes="icon" ToolTip.Tip="Align left" IsChecked="{Binding Editor.CellAlignH, Converter={StaticResource Eq}, ConverterParameter=left}"><mi:MaterialIcon Kind="FormatAlignLeft" /></ToggleButton>
+                                            <ToggleButton Classes="icon" ToolTip.Tip="Align centre" IsChecked="{Binding Editor.CellAlignH, Converter={StaticResource Eq}, ConverterParameter=center}"><mi:MaterialIcon Kind="FormatAlignCenter" /></ToggleButton>
+                                            <ToggleButton Classes="icon" ToolTip.Tip="Align right" IsChecked="{Binding Editor.CellAlignH, Converter={StaticResource Eq}, ConverterParameter=right}"><mi:MaterialIcon Kind="FormatAlignRight" /></ToggleButton>
+                                            <ToggleButton Classes="icon" ToolTip.Tip="Align top" IsChecked="{Binding Editor.CellAlignV, Converter={StaticResource Eq}, ConverterParameter=top}"><mi:MaterialIcon Kind="AlignVerticalTop" /></ToggleButton>
+                                            <ToggleButton Classes="icon" ToolTip.Tip="Align middle" IsChecked="{Binding Editor.CellAlignV, Converter={StaticResource Eq}, ConverterParameter=middle}"><mi:MaterialIcon Kind="AlignVerticalCenter" /></ToggleButton>
+                                            <ToggleButton Classes="icon" ToolTip.Tip="Align bottom" IsChecked="{Binding Editor.CellAlignV, Converter={StaticResource Eq}, ConverterParameter=bottom}"><mi:MaterialIcon Kind="AlignVerticalBottom" /></ToggleButton>
+                                        </StackPanel>
+                                        <views:TableBorderControls />
+                                    </StackPanel>                                    <TextBlock Text="Double-click the table to edit cells (select, type, merge, fill, header)."
                                                Foreground="{DynamicResource TextHint}" FontSize="11" TextWrapping="Wrap" Margin="0,6" />
                                 </StackPanel>
                             </DataTemplate>
@@ -1007,11 +1146,13 @@
                                     <TextBlock Text="{Binding Density, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" Foreground="{DynamicResource TextPrimary}" />
                                 </StackPanel>
                             </Grid>
-                            <Grid ColumnDefinitions="90,*" Margin="0,2">
-                                <TextBlock Text="Label type" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" />
+                            <Expander Header="Advanced media settings" IsExpanded="False"><StackPanel><CheckBox Content="Override stock media mode" IsChecked="{Binding AllowMediaOverride}" />
+<Grid ColumnDefinitions="90,*" Margin="0,2">
+                                <TextBlock Text="Media mode" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" />
                                 <ComboBox Grid.Column="1" HorizontalAlignment="Stretch"
-                                          ItemsSource="{Binding LabelTypes}" SelectedItem="{Binding SelectedLabelType}" />
+                                          IsEnabled="{Binding AllowMediaOverride}" ItemsSource="{Binding LabelTypes}" SelectedItem="{Binding SelectedLabelType}" />
                             </Grid>
+</StackPanel></Expander>
                             <Grid ColumnDefinitions="90,*" Margin="0,2">
                                 <TextBlock Text="Copies" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" />
                                 <NumericUpDown x:Name="CopiesInput" Grid.Column="1" Value="{Binding Copies, Converter={StaticResource Nz}}" Minimum="1" FormatString="0" />

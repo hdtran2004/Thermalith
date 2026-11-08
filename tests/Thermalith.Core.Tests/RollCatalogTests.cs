@@ -44,13 +44,13 @@ public class RollCatalogTests
     }
 
     [Fact]
-    public void Barcodeless_roll_is_remembered_as_last_used_but_not_keyed()
+    public void Barcodeless_stock_is_saved_for_reuse()
     {
         // Manual/offline roll with no RFID barcode: remembered as default, not added to the keyed list.
         var manual = new RollDefinition { WidthMm = 30, HeightMm = 15, PaperType = "black" };
         var catalog = new LabelRollCatalog().Upsert(manual);
 
-        Assert.Empty(catalog.Rolls);
+        Assert.Single(catalog.Rolls);
         Assert.Equal(manual, catalog.LastUsed);
     }
 

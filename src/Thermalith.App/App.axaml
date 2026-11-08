@@ -131,6 +131,41 @@
             <Setter Property="Padding" Value="8,5" />
             <Setter Property="Margin" Value="2" />
         </Style>
-    </Application.Styles>
+        <Style Selector="Button.tool, ToggleButton.tool">
+            <Setter Property="Width" Value="34" />
+            <Setter Property="Height" Value="34" />
+            <Setter Property="Padding" Value="7" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Button.tool:pointerover, ToggleButton.tool:pointerover">
+            <Setter Property="Background" Value="{DynamicResource DividerWeak}" />
+        </Style>
+        <Style Selector="Button.tool mi|MaterialIcon, ToggleButton.tool mi|MaterialIcon">
+            <Setter Property="Width" Value="20" /><Setter Property="Height" Value="20" />
+        </Style>
+        <Style Selector="Button:disabled mi|MaterialIcon, ToggleButton:disabled mi|MaterialIcon">
+            <Setter Property="Foreground" Value="{DynamicResource TextHint}" />
+            <Setter Property="Opacity" Value="0.4" />
+        </Style>
+        <Style Selector="Button:disabled, ToggleButton:disabled">
+            <Setter Property="Opacity" Value="0.55" />
+        </Style>
+        <Style Selector="Rectangle.toolDivider">
+            <Setter Property="Width" Value="1" /><Setter Property="Height" Value="24" />
+            <Setter Property="Margin" Value="7,0" /><Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Fill" Value="{DynamicResource DividerWeak}" />
+        </Style>
+        <Style Selector="TextBlock.toolbarLabel">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Margin" Value="5,0" />
+            <Setter Property="FontSize" Value="12" />
+        </Style>
+        <Style Selector="Button, TextBox, ComboBox, NumericUpDown">
+            <Setter Property="CornerRadius" Value="5" />
+        </Style>    </Application.Styles>
 
 </Application>

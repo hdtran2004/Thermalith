@@ -29,7 +29,14 @@
             </StackPanel>
         </Border>
 
-        <Grid Classes="r" ColumnDefinitions="92,*"><TextBlock Text="Name" /><TextBox Grid.Column="1" Text="{Binding Name}" /></Grid>
+        <StackPanel IsVisible="{Binding IsNewDesign}" Spacing="5" Margin="0,0,0,12">
+            <TextBlock Classes="section" Text="Design" />
+            <Grid Classes="r" ColumnDefinitions="92,*" ToolTip.Tip="Name of the artwork/template you are creating."><TextBlock Text="Design name" /><TextBox Grid.Column="1" Text="{Binding DesignName}" /></Grid>
+        </StackPanel>
+        <Grid Classes="r" ColumnDefinitions="92,*" IsVisible="{Binding IsNewDesign}"><TextBlock Text="Stock" /><ComboBox Grid.Column="1" HorizontalAlignment="Stretch" ItemsSource="{Binding StockChoices}" SelectedIndex="{Binding SelectedStockIndex}" /></Grid>
+        <Grid Classes="r" ColumnDefinitions="92,*" IsVisible="{Binding IsNewDesign}"><TextBlock Text="Layout" /><ComboBox Grid.Column="1" HorizontalAlignment="Stretch" ItemsSource="{Binding LayoutChoices}" SelectedItem="{Binding Layout}" /></Grid>
+        <TextBlock Classes="section" Text="Label stock" />
+        <Grid Classes="r" ColumnDefinitions="92,*" ToolTip.Tip="Name of the physical label stock, for example Transparent 80 × 50."><TextBlock Text="Stock name" /><TextBox Grid.Column="1" Text="{Binding Name}" /></Grid>
         <Grid Classes="r" ColumnDefinitions="92,*"><TextBlock Text="Part name" /><TextBox Grid.Column="1" Text="{Binding PartName, UpdateSourceTrigger=PropertyChanged}" Watermark="e.g. T40*20-320WHITE" /></Grid>
         <Grid Classes="r" ColumnDefinitions="92,*"><TextBlock Text="Box id" /><TextBox Grid.Column="1" Text="{Binding BoxId}" Watermark="optional, e.g. 30486" /></Grid>
         <Grid Classes="r" ColumnDefinitions="92,*"><TextBlock Text="Paper type" /><ComboBox Grid.Column="1" HorizontalAlignment="Stretch" ItemsSource="{x:Static ed:EditorOptions.PaperType}" SelectedItem="{Binding PaperType}" /></Grid>
@@ -45,7 +52,7 @@
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,14,0,0">
             <Button Content="Cancel" Click="OnCancel" MinWidth="80" />
-            <Button Content="Save" Click="OnSave" MinWidth="80" />
+            <Button Content="{Binding SaveButtonText}" Click="OnSave" MinWidth="80" />
         </StackPanel>
     </StackPanel>
 </Window>

@@ -191,7 +191,7 @@ public sealed partial class DataMergeViewModel : ObservableObject
         {
             printed = await _printer.PrintMergeAsync(
                 printRows,
-                i => _editor.RenderForPrint(_data.Rows[i], i),
+                (i, labelIndex) => _editor.RenderForPrint(_data.Rows[i], i, labelIndex),
                 new Progress<int>(done => progress.Report(done)),
                 () => progress.IsCancelled);
         }

@@ -37,6 +37,28 @@ public sealed partial class RollDialogViewModel : ObservableObject
     }
 
     public string Title { get; }
+    public string[] StockChoices { get; private set; } = ["Create new stock…"];
+    private RollDefinition[] _stocks = [];
+    public void LoadStocks(IEnumerable<RollDefinition> stocks)
+    {
+        _stocks = stocks.OrderBy(s => s.Name).ToArray();
+        StockChoices = new[] { "Create new stock…" }.Concat(_stocks.Select(s => s.Name)).ToArray();
+    }
+    [ObservableProperty] private int _selectedStockIndex;
+    partial void OnSelectedStockIndexChanged(int value)
+    {
+        if (value == 0) { Name = ""; PartName = ""; BoxId = ""; return; }
+        if (value < 0 || value > _stocks.Length) return;
+        var s = _stocks[value - 1];
+        Name = s.Name; PartName = s.PartName ?? ""; BoxId = s.BoxId ?? "";
+        Width = s.WidthMm; Height = s.HeightMm; Shape = s.Shape;
+        CornerRadiusMm = s.EffectiveCornerRadiusMm; PaperType = s.PaperType; Density = s.Density;
+    }
+    public string[] LayoutChoices { get; } = ["Landscape", "Portrait"];
+    [ObservableProperty] private string _layout = "Landscape";
+    public bool IsNewDesign { get; init; }
+    public string SaveButtonText => IsNewDesign ? "Create design" : "Save";
+    [ObservableProperty] private string _designName = "Untitled";
 
     /// <summary>True when this dialog is defining a roll detected over RFID (shows the read-only identity).</summary>
     public bool HasRfid => !string.IsNullOrEmpty(_barcode) || !string.IsNullOrEmpty(_uuid);
@@ -49,6 +71,11 @@ public sealed partial class RollDialogViewModel : ObservableObject
     [ObservableProperty] private double _width;
     [ObservableProperty] private double _height;
     [ObservableProperty] private string _shape;
+    partial void OnShapeChanged(string value)
+    {
+        if (value == "rounded" && CornerRadiusMm <= 0)
+            CornerRadiusMm = Math.Min(2, Math.Max(0, Math.Min(Width,Height) / 2));
+    }
     [ObservableProperty] private int? _density;
     [ObservableProperty] private double _cornerRadiusMm = 2;
 
@@ -65,7 +92,7 @@ public sealed partial class RollDialogViewModel : ObservableObject
     /// <summary>Build the roll definition from the form (RFID identity carried through).</summary>
     public RollDefinition ToRoll() => new()
     {
-        Barcode = _barcode,
+        Barcode = SelectedStockIndex > 0 ? _stocks[SelectedStockIndex - 1].Barcode : _barcode,
         Uuid = _uuid,
         Serial = _serial,
         ConsumablesType = _consumablesType,

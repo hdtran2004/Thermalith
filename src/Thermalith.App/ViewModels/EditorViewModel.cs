@@ -41,8 +41,10 @@ public sealed partial class EditorViewModel : ObservableObject
     private DateTimeOffset _lastRenderAt;
     private const double RenderCadenceMs = 40;
 
-    public EditorViewModel()
+    private readonly Thermalith.App.Services.BlockLibrary _blocks;
+    public EditorViewModel(Thermalith.App.Services.BlockLibrary? blocks = null)
     {
+        _blocks = blocks ?? Thermalith.App.Services.BlockLibrary.Shared;
         _renderer = new LabelRenderer(_fonts);
         _history = new SnapshotHistory(_live);
         _renderDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(80) };
@@ -98,7 +100,16 @@ public sealed partial class EditorViewModel : ObservableObject
     [ObservableProperty] private bool _smoothPreview = true;
 
     // Re-render when the preview mode flips (exact 1-bit ↔ smooth grayscale, §6.3.6).
-    partial void OnSmoothPreviewChanged(bool value) => RequestRender();
+    public Avalonia.Media.Imaging.BitmapInterpolationMode PreviewInterpolationMode => SmoothPreview
+        ? Avalonia.Media.Imaging.BitmapInterpolationMode.HighQuality
+        : Avalonia.Media.Imaging.BitmapInterpolationMode.None;
+    partial void OnSmoothPreviewChanged(bool value)
+    {
+        OnPropertyChanged(nameof(PreviewInterpolationMode));
+        RequestRender();
+    }
+    [ObservableProperty] private double _previewDisplayScale = 1;
+    partial void OnPreviewDisplayScaleChanged(double value) { if (SmoothPreview) RequestRender(); }
 
     /// <summary>Grid pitch in mm (also the snap increment).</summary>
     public double GridMm { get; } = 2.0;
@@ -123,9 +134,22 @@ public sealed partial class EditorViewModel : ObservableObject
     public object InspectorTarget => SelectedEditor ?? (object)_canvasEditor;
 
     /// <summary>Render the current document to the 1bpp raster for printing (same path as the preview, §6.3).</summary>
-    public Niimbot.Net.Encoding.MonochromeBitmap RenderForPrint() =>
-        _renderer.Render(_live, new ResolveContext { Now = DateTimeOffset.Now, Assets = _assets, RowIndex = 0 });
+    public Niimbot.Net.Encoding.MonochromeBitmap RenderForPrint(int labelIndex = 0) =>
+        _renderer.Render(ParameterPrintDocument(), new ResolveContext { BlockProvider = LoadBlock, ParameterValues = BlockEditValues().Names, ParameterIdValues = BlockEditValues().Ids, Now = DateTimeOffset.Now, Assets = _assets, RowIndex = 0, LabelIndex = labelIndex });
 
+    public Thermalith.Core.Model.Canvas PrintPreviewCanvas => ViewRotated
+        ? _live.Canvas with { WidthMm = _live.Canvas.HeightMm, HeightMm = _live.Canvas.WidthMm }
+        : _live.Canvas;
+    public Bitmap RenderPrintPreview(int labelIndex, bool showPrinterDots, bool applyOrientation = true)
+    {
+        if (showPrinterDots) return PreviewImage.FromMonochrome(RenderForPrint(labelIndex));
+        var document = ParameterPrintDocument();
+        var pixels = Math.Max(1, document.Canvas.WidthMm * document.Canvas.HeightMm * Math.Pow(document.Canvas.Dpi / 25.4, 2));
+        var scale = Math.Max(1, Math.Min(3, Math.Sqrt(16_000_000 / pixels)));
+        var gray = _renderer.RenderGray(document, new ResolveContext { BlockProvider = LoadBlock, ParameterValues = BlockEditValues().Names, ParameterIdValues = BlockEditValues().Ids, Now = DateTimeOffset.Now, Assets = _assets, LabelIndex = labelIndex },
+            new RenderOptions { PreviewRasterScale = scale, ApplyOrientation = applyOrientation });
+        return PreviewImage.FromGray(gray);
+    }
     /// <summary>Show a merge row on the editor canvas (GitHub #7.2), or clear it (null) to return to the
     /// authoring view where tokens render as <c>{…}</c> placeholders. Re-renders immediately.</summary>
     public void SetPreviewRow(Thermalith.Core.Data.MergeRow? row, int rowIndex)
@@ -137,17 +161,102 @@ public sealed partial class EditorViewModel : ObservableObject
 
     /// <summary>Render one merge row (GitHub #7): tokens resolve against the row's data, the serial/row
     /// index advances, everything else stays the current document. Same render path as <see cref="RenderForPrint()"/>.</summary>
-    public Niimbot.Net.Encoding.MonochromeBitmap RenderForPrint(Thermalith.Core.Data.MergeRow row, int rowIndex) =>
-        _renderer.Render(_live, new ResolveContext
-        {
+    public Niimbot.Net.Encoding.MonochromeBitmap RenderForPrint(Thermalith.Core.Data.MergeRow row, int rowIndex, int? labelIndex = null) =>
+        _renderer.Render(ParameterPrintDocument(), new ResolveContext { BlockProvider = LoadBlock, ParameterValues = BlockEditValues().Names, ParameterIdValues = BlockEditValues().Ids,
             Now = DateTimeOffset.Now,
             Assets = _assets,
             RowIndex = rowIndex,
+            LabelIndex = labelIndex,
             Data = row.ByName,
             DataByOrdinal = row.ByOrdinal,
         });
+    private readonly ParameterProgressStore _parameterProgress = new(Path.Combine(Thermalith.App.Services.PlatformDirectories.AppData(), "parameter-progress.json"));
+    private List<LabelParameter>? _printParameterDefinitions;
+    private List<LabelParameter>? _printParameterValues;
+    private string? _printDocumentId;
+    private int _completedParameterLabels;
+    public IReadOnlyList<LabelParameter> Parameters { get { SyncBlockParameters(); return _parameterProgress.Resume(_manifest.Id, _live.Parameters ?? []); } }
+    private LabelDocument ParameterPrintDocument() { var parameters = _printParameterValues ?? Parameters.ToList(); return _live with { Parameters = parameters }; }
+    public string BeginParameterPrintRun(int count)
+    {
+        FreezeBlockSources();
+        var directNames = Thermalith.Core.Tokens.TokenScanner.Scan(_live).ToHashSet(StringComparer.Ordinal);
+        var referenced = Thermalith.Core.Tokens.ParameterResolver.UsedNames(_live.Parameters, directNames);
+        _printParameterDefinitions = (_live.Parameters ?? []).Where(p => referenced.Contains(p.Name)).ToList();
+        _printParameterValues = Parameters.Where(p => referenced.Contains(p.Name)).ToList();
+        _printDocumentId = _manifest.Id;
+        _completedParameterLabels = 0;
+        if (HasIncrementingParameters)
+            _parameterProgress.SaveNext(_printDocumentId, _printParameterDefinitions, _printParameterValues, 0);
+        var first = Thermalith.Core.Tokens.ParameterResolver.ResolveAll(_printParameterValues);
+        var last = Thermalith.Core.Tokens.ParameterResolver.ResolveAll(_printParameterValues, Math.Max(0, count - 1));
+        var quantity = count == 1 ? "1 label" : $"{count:N0} labels";
+        return $"Total to print: {quantity}\n\n" + string.Join("\n", _printParameterValues.Where(p => directNames.Contains(p.Name))
+            .Select(p => first[p.Name] == last[p.Name]
+                ? $"{p.Name}: {first[p.Name]}"
+                : $"{p.Name}: {first[p.Name]} to {last[p.Name]}"));
+    }
+    public void CompleteParameterLabel()
+    {
+        if (_printParameterDefinitions is null || _printParameterValues is null || _printDocumentId is null) return;
+        _completedParameterLabels++;
+        try { _parameterProgress.SaveNext(_printDocumentId, _printParameterDefinitions, _printParameterValues, _completedParameterLabels); }
+        catch (Exception ex) { throw new IOException("Label printed, but the next parameter value could not be saved. Check the next value before printing again. " + ex.Message, ex); }
+    }
+    public void EndParameterPrintRun()
+    {
+        if (_printParameterValues is null) return;
+        _blockPrintSnapshot = null;
+        _printParameterDefinitions = null;
+        _printParameterValues = null;
+        _printDocumentId = null;
+        RenderNow();
+        RaiseState();
+    }
+    [ObservableProperty] private bool _isPrintView;
+    public int WorkspaceViewIndex { get => IsPrintView ? 1 : 0; set { if (value is 0 or 1) IsPrintView = value == 1; } }
+    public bool ShowWorkspaceGrid => !IsPrintView && ShowGrid;
+    partial void OnShowGridChanged(bool value) => OnPropertyChanged(nameof(ShowWorkspaceGrid));
+    public bool ShowWorkspaceGuides => !IsPrintView && ShowSafeArea;
+
+    partial void OnIsPrintViewChanged(bool value)
+    {
+        if (value) { CommitPrimaryEdit(); ExitCellMode(); }
+        OnPropertyChanged(nameof(WorkspaceViewIndex));
+        OnPropertyChanged(nameof(ShowWorkspaceGrid));
+        OnPropertyChanged(nameof(ShowWorkspaceGuides));
+        RenderNow();
+    }    [ObservableProperty] private bool _showParameterReferences;
+    partial void OnShowParameterReferencesChanged(bool value) => RenderNow();
+    public bool HasIncrementingParameters => Parameters.Any(p => p.IncrementEnabled && Thermalith.Core.Tokens.ParameterResolver.UsedNames(_live.Parameters, Thermalith.Core.Tokens.TokenScanner.Scan(_live)).Contains(p.Name));
+    public void SetParameters(List<LabelParameter> parameters)
+    {
+        RequireEditable();
+        FlushGesture();
+        var effective = Parameters;
+        var original = _live.Parameters ?? [];
+        parameters = parameters.Select(p => p.Id is not null ? p : p with { Id = original.FirstOrDefault(o => o.Name == p.Name)?.Id ?? Guid.NewGuid().ToString("N") }).ToList();
+        parameters = ParameterIdentity.PreserveNames(parameters,original,_manifest.Id);
+        if (!IsBlockSource && !IsEditingBlock)
+            foreach (var inherited in original.Where(p => InheritedParameterNames.Contains(p.Name)))
+                if (!parameters.Any(p => p.Id == inherited.Id && p.Name == inherited.Name))
+                    throw new InvalidOperationException("Inherited parameter names cannot be changed or removed in a child design. Unlock the custom block for in-place editing to rename them.");
+        Thermalith.Core.Tokens.ParameterResolver.ResolveAll(parameters);
+        parameters = parameters.Select(p =>
+        {
+            var index = original.FindIndex(old => old.Id == p.Id);
+            return index >= 0 && p == effective[index] ? original[index] : p with { ProgressRevision = Guid.NewGuid().ToString("N") };
+        }).ToList();
+        if (original.SequenceEqual(parameters)) return;
+        _live = _live with { Parameters = parameters };
+        _history.Commit(_live);
+        MarkDirty();
+        RenderNow();
+        RaiseState();
+    }
     public string? FilePath { get; private set; }
     public string DocumentName => _live.Metadata.Name;
+    public string DocumentStateText => Dirty ? "Unsaved changes" : FilePath is null ? "New label" : "Saved";
     public bool CanUndo => _history.CanUndo;
     public bool CanRedo => _history.CanRedo;
 
@@ -156,7 +265,20 @@ public sealed partial class EditorViewModel : ObservableObject
 
     // ── Document lifecycle ────────────────────────────────────────────────────────────────────
 
-    public void NewDocument() => LoadInternal(DocumentFactory.New(), new Manifest { Id = DocumentFactory.NewId(), Name = "Untitled" }, null, new Dictionary<string, byte[]>());
+    /// <summary>Complete New Label setup before presenting the untouched design to the user.</summary>
+    public void CompleteNewDocumentSetup()
+    {
+        if (FilePath is not null || HasElements) throw new InvalidOperationException("Only a new empty design can finish setup.");
+        LoadInternal(_live, _manifest, null, _assets);
+    }
+
+    public void NewDocument(string name = "Untitled")
+    {
+        name = string.IsNullOrWhiteSpace(name) ? "Untitled" : name.Trim();
+        var document = DocumentFactory.New();
+        LoadInternal(document with { Metadata = document.Metadata with { Name = name } },
+            new Manifest { Id = DocumentFactory.NewId(), Name = name }, null, new Dictionary<string, byte[]>());
+    }
 
     /// <summary>New empty document at a specific canvas size + target printhead width (clean, not dirty) —
     /// used at startup to seed the last applied roll/printer.</summary>
@@ -176,14 +298,25 @@ public sealed partial class EditorViewModel : ObservableObject
 
     public void SaveTo(string path)
     {
+        if (IsBlockReadOnly) throw new InvalidOperationException("Unlock the custom block before saving changes.");
+        if (IsEditingBlock) throw new InvalidOperationException("Use Save block changes to finish this edit.");
+        SyncBlockParameters();
         FlushGesture();
+        if (string.IsNullOrWhiteSpace(_live.Metadata.Name) || string.Equals(_live.Metadata.Name, "Untitled", StringComparison.OrdinalIgnoreCase))
+        {
+            _live = _live with { Metadata = _live.Metadata with { Name = Path.GetFileNameWithoutExtension(path) } };
+            _canvasEditor = new CanvasEditorViewModel(_live, OnCanvasEdited);
+            OnPropertyChanged(nameof(InspectorTarget));
+        }
         _manifest = _manifest with
         {
             Name = _live.Metadata.Name,
             Updated = DateTimeOffset.UtcNow.ToString("o"),
         };
         var package = new LabelPackage { Manifest = _manifest, Document = _live, Assets = _assets };
-        LabelPackageIo.Save(package, path);
+        if (_live.CustomBlockId is { } blockId) _blocks.Save(blockId,package);
+        else LabelPackageIo.Save(package, path);
+        _blocks.Register(path,_live);
         FilePath = path;
         Dirty = false;
         RaiseState();
@@ -245,16 +378,31 @@ public sealed partial class EditorViewModel : ObservableObject
 
     private void LoadInternal(LabelDocument doc, Manifest? manifest, string? path, IReadOnlyDictionary<string, byte[]> assets)
     {
+        BlockSourceUnlocked = false;
+        CancelCellEdit();
+        CellEditTableId = null;
+        _cellAnchorR = _cellFocusR = _cellAnchorC = _cellFocusC = 0;
+        CellHighlights.Clear();
+        if (string.IsNullOrWhiteSpace(doc.Metadata.Name) || string.Equals(doc.Metadata.Name, "Untitled", StringComparison.OrdinalIgnoreCase))
+        {
+            var name = !string.IsNullOrWhiteSpace(manifest?.Name) && !string.Equals(manifest.Name, "Untitled", StringComparison.OrdinalIgnoreCase)
+                ? manifest.Name
+                : path is not null ? Path.GetFileNameWithoutExtension(path) : "Untitled";
+            doc = doc with { Metadata = doc.Metadata with { Name = name } };
+        }
         _manifest = manifest ?? new Manifest { Id = DocumentFactory.NewId(), Name = doc.Metadata.Name };
         _assets = assets;
+        doc = doc with { Parameters = ParameterIdentity.Assign(doc.Parameters,doc.CustomBlockId ?? _manifest.Id) };
         _live = ApplyAutoSizeToText(MigrateLegacyLines(doc)); // migrate legacy lines, then hug auto-size text boxes
         _history = new SnapshotHistory(_live);
         _gestureActive = false;
         FilePath = path;
         Dirty = false;
+        OnPropertyChanged(nameof(CustomBlockId)); OnPropertyChanged(nameof(IsBlockSource)); OnPropertyChanged(nameof(IsBlockReadOnly));
         _canvasEditor = new CanvasEditorViewModel(_live, OnCanvasEdited);
         RebuildLayers();
         SelectedLayer = null;
+        OnPropertyChanged(nameof(InspectorTarget));
         RenderNow();      // sets PreviewWidthPx/HeightPx first…
         FitToWindow();    // …so the fit zoom is based on the real dimensions
         RaiseState();
@@ -388,6 +536,7 @@ public sealed partial class EditorViewModel : ObservableObject
                 "TextSizePt" => t with { Props = t.Props with { TextSizePt = s.Props.TextSizePt } },
                 "TextBold" => t with { Props = t.Props with { TextBold = s.Props.TextBold } },
                 "TextItalic" => t with { Props = t.Props with { TextItalic = s.Props.TextItalic } },
+                "TextUnderline" => t with { Props = t.Props with { TextUnderline = s.Props.TextUnderline } },
                 "TextAlignment" => t with { Props = t.Props with { TextAlignment = s.Props.TextAlignment } },
                 "TextWrap" => t with { Props = t.Props with { TextWrap = s.Props.TextWrap } },
                 "TextLetterSpacing" => t with { Props = t.Props with { TextLetterSpacing = s.Props.TextLetterSpacing } },
@@ -460,6 +609,7 @@ public sealed partial class EditorViewModel : ObservableObject
 
     public void DeleteSelected()
     {
+        RequireEditable();
         if (_selectedIds.Count == 0) return;
         FlushGesture();
         var ids = new HashSet<string>(_selectedIds);
@@ -524,6 +674,7 @@ public sealed partial class EditorViewModel : ObservableObject
 
     private void SetElementFlag(string id, Func<LabelElement, LabelElement> map)
     {
+        if (IsBlockReadOnly || id == _blockEdit?.Backdrop) return;
         if (_live.Elements.FirstOrDefault(e => e.Id == id) is null) return;
         FlushGesture();
         _live = _live with { Elements = _live.Elements.Select(e => e.Id == id ? map(e) : e).ToList() };
@@ -593,6 +744,7 @@ public sealed partial class EditorViewModel : ObservableObject
 
     public void AddElement(string type)
     {
+        RequireEditable();
         FlushGesture();
         var el = ElementFactory.Create(type, _live.Canvas);
         if (el is TextElement t && t.Props.AutoSize) // start an auto-size text already hugging its glyphs
@@ -625,6 +777,9 @@ public sealed partial class EditorViewModel : ObservableObject
     }
 
     // ── Z-order (Arrange, §6.2) ─────────────────────────────────────────────────────────────────
+
+    public bool CanRaiseElement => SelectedEditor is { } editor && _live.Elements.FindIndex(e => e.Id == editor.Id) is var index && index >= 0 && index < _live.Elements.Count - 1;
+    public bool CanLowerElement => SelectedEditor is { } editor && _live.Elements.FindIndex(e => e.Id == editor.Id) > 0;
 
     public void BringToFront() => Reorder(els => { var e = Take(els, out var rest); rest.Add(e); return rest; });
     public void SendToBack() => Reorder(els => { var e = Take(els, out var rest); rest.Insert(0, e); return rest; });
@@ -667,6 +822,12 @@ public sealed partial class EditorViewModel : ObservableObject
 
     // ── Interactive drag (move + resize, §7) ────────────────────────────────────────────────────
 
+    [ObservableProperty] private bool _smartSnapEnabled = true;
+    public ObservableCollection<SmartGuide> SmartGuides { get; } = [];
+    public ObservableCollection<SpacingGuideVisual> SpacingGuides { get; } = [];
+    private RenderedRect _dragBounds;
+    private IReadOnlyList<RenderedRect> _dragTargets = [];
+    partial void OnSmartSnapEnabledChanged(bool value) { if (!value) SmartGuides.Clear(); SpacingGuides.Clear(); }
     public bool IsDragging => _dragMode != DragMode.None;
 
     /// <summary>Begin a pointer-driven gesture, capturing every selected element's start geometry. Resize requires a single selection.</summary>
@@ -674,6 +835,8 @@ public sealed partial class EditorViewModel : ObservableObject
     {
         if (_selectedIds.Count == 0) return;
         FlushGesture();
+        SmartGuides.Clear(); SpacingGuides.Clear();
+        RefreshAlignmentBounds();
         _dragHandle = handle;
         _dragMoved = false;
         _lineDrag = null;
@@ -682,6 +845,13 @@ public sealed partial class EditorViewModel : ObservableObject
         foreach (var id in _selectedIds)
             if (_live.Elements.FirstOrDefault(e => e.Id == id) is { Locked: false } e)
                 _dragGeoms[id] = new GeomMm(e.X, e.Y, e.W, e.H);
+        var movingBounds = _live.Elements.Where(e => _dragGeoms.ContainsKey(e.Id)).Select(Bounds).ToList();
+        if (movingBounds.Count > 0)
+        {
+            var x = movingBounds.Min(b => b.XMm); var y = movingBounds.Min(b => b.YMm);
+            _dragBounds = new RenderedRect(x, y, movingBounds.Max(b => b.XMm + b.WMm) - x, movingBounds.Max(b => b.YMm + b.HMm) - y);
+        }
+        _dragTargets = _live.Elements.Where(e => e.Visible && !_selectedIds.Contains(e.Id)).Select(Bounds).ToList();
         // Dragging a Line endpoint: capture both endpoints (absolute) so deltas apply against a fixed origin.
         if (handle is Handle.Point1 or Handle.Point2 && _selectedIds.Count == 1
             && _live.Elements.FirstOrDefault(e => e.Id == _selectedIds[0]) is LineElement { Locked: false } ln)
@@ -691,7 +861,7 @@ public sealed partial class EditorViewModel : ObservableObject
     }
 
     /// <summary>Apply the running drag delta (display px) against the captured start geometry.</summary>
-    public void DragTo(double deltaXDisplay, double deltaYDisplay)
+    public void DragTo(double deltaXDisplay, double deltaYDisplay, bool bypassSmartSnap = false)
     {
         if (_dragMode == DragMode.None || _dragGeoms is null) return;
         _dragMoved = true;
@@ -699,14 +869,40 @@ public sealed partial class EditorViewModel : ObservableObject
         var dmx = deltaXDisplay / perMm;
         var dmy = deltaYDisplay / perMm;
 
+        SmartGuides.Clear(); SpacingGuides.Clear();
         var list = new List<LabelElement>(_live.Elements);
         if (_dragMode == DragMode.Move)
         {
-            foreach (var (id, g) in _dragGeoms)
+            var proposed = _dragBounds with { XMm = _dragBounds.XMm + dmx, YMm = _dragBounds.YMm + dmy };
+            var (gridX, gridY) = SnapMove(proposed.XMm, proposed.YMm, proposed.WMm, proposed.HMm);
+            var smart = SmartSnapEnabled && !bypassSmartSnap ? SmartSnap.Align(proposed, _dragTargets, 6 / perMm) : new SmartSnapResult(0, 0, null, null);
+            var spacing = SmartSnapEnabled && !bypassSmartSnap
+                ? EqualSpacingSnap.Align(proposed,_dragTargets,new RenderedRect(0,0,_live.Canvas.WidthMm,_live.Canvas.HeightMm),6 / perMm)
+                : new EqualSpacingResult(0,0,[],[]);
+            var useSpacingX = spacing.XGuides.Count > 0 && (smart.XGuide is null || Math.Abs(spacing.OffsetX) <= Math.Abs(smart.OffsetX) + 1e-9);
+            var useSpacingY = spacing.YGuides.Count > 0 && (smart.YGuide is null || Math.Abs(spacing.OffsetY) <= Math.Abs(smart.OffsetY) + 1e-9);
+            var moveX = dmx + (useSpacingX ? spacing.OffsetX : smart.XGuide is not null ? smart.OffsetX : gridX - proposed.XMm);
+            var moveY = dmy + (useSpacingY ? spacing.OffsetY : smart.YGuide is not null ? smart.OffsetY : gridY - proposed.YMm);
+            if (useSpacingX) smart = smart with { XGuide = null };
+            if (useSpacingY) smart = smart with { YGuide = null };
+            foreach (var guide in (useSpacingX ? spacing.XGuides : []).Concat(useSpacingY ? spacing.YGuides : []))
             {
-                var (nx, ny) = SnapMove(g.X + dmx, g.Y + dmy, g.W, g.H);
-                ReplaceIn(list, id, e => e with { X = nx, Y = ny });
+                var position = (guide.Position + (guide.Horizontal ? moveY - dmy : moveX - dmx)) * perMm;
+                var start = guide.Start * perMm; var end = guide.End * perMm;
+                var a = guide.Horizontal ? new Point(start,position) : new Point(position,start);
+                var b = guide.Horizontal ? new Point(end,position) : new Point(position,end);
+                var tick = guide.Horizontal ? new Vector(0,3) : new Vector(3,0);
+                SpacingGuides.Add(new SpacingGuideVisual(a,b,a-tick,a+tick,b-tick,b+tick,
+                    guide.Horizontal ? (start+end)/2 - 20 : position + 5,
+                    guide.Horizontal ? position - 21 : (start+end)/2 - 8,
+                    $"{guide.Gap:0.##} mm"));
             }
+            foreach (var guide in new[] { smart.XGuide, smart.YGuide }.OfType<AlignmentGuide>())
+                SmartGuides.Add(guide.Vertical
+                    ? new SmartGuide(new Point(guide.Position * perMm, guide.Start * perMm - 5), new Point(guide.Position * perMm, guide.End * perMm + 5))
+                    : new SmartGuide(new Point(guide.Start * perMm - 5, guide.Position * perMm), new Point(guide.End * perMm + 5, guide.Position * perMm)));
+            foreach (var (id, g) in _dragGeoms)
+                ReplaceIn(list, id, e => e with { X = g.X + moveX, Y = g.Y + moveY });
         }
         else if (_lineDrag is { } ld && _dragHandle is Handle.Point1 or Handle.Point2)
         {
@@ -776,6 +972,8 @@ public sealed partial class EditorViewModel : ObservableObject
         if (_autoSizeConverted && SelectedEditor is { } ed && _live.Elements.FirstOrDefault(e => e.Id == ed.Id) is { } el)
             SelectedEditor = ElementEditorViewModel.Create(el, OnElementEdited);
         _autoSizeConverted = false;
+        SmartGuides.Clear(); SpacingGuides.Clear();
+        _dragTargets = [];
         _dragMode = DragMode.None;
         _dragGeoms = null;
         _lineDrag = null;
@@ -788,7 +986,7 @@ public sealed partial class EditorViewModel : ObservableObject
         var list = new List<LabelElement>(_live.Elements);
         foreach (var id in _selectedIds)
         {
-            if (_live.Elements.FirstOrDefault(e => e.Id == id) is { Locked: true }) continue; // locked = no scroll-resize
+            if (_live.Elements.FirstOrDefault(e => e.Id == id) is { Locked: true } or BlockElement) continue; // blocks retain their shared native footprint
             ReplaceIn(list, id, e =>
             {
                 if (e is LineElement le) // scale the endpoints about the line's centre (no W/H clamp)
@@ -894,6 +1092,7 @@ public sealed partial class EditorViewModel : ObservableObject
 
     public void Undo()
     {
+        RequireEditable();
         FlushGesture();
         if (!_history.CanUndo) return;
         _live = _history.Undo();
@@ -902,6 +1101,7 @@ public sealed partial class EditorViewModel : ObservableObject
 
     public void Redo()
     {
+        RequireEditable();
         FlushGesture();
         if (!_history.CanRedo) return;
         _live = _history.Redo();
@@ -922,7 +1122,9 @@ public sealed partial class EditorViewModel : ObservableObject
 
     private void OnCanvasEdited()
     {
-        _live = _canvasEditor.Apply(_live);
+        var updated = _canvasEditor.Apply(_live);
+        if (updated.Canvas == _live.Canvas && updated.Metadata.Name == _live.Metadata.Name) return;
+        _live = updated;
         BeginGesture();
         MarkDirty();
         RequestRender();
@@ -940,7 +1142,12 @@ public sealed partial class EditorViewModel : ObservableObject
     /// (the printer's max print width) is stored so the printable area = min(label, printhead) shows as a
     /// guide and the print crops to it. No clamping — designs keep the label's real size. Returns true
     /// when the label is wider than the printhead (a printable margin/crop exists).</summary>
-    public bool ApplyRoll(double widthMm, double heightMm, string? shape, int? dpi, double? printheadWidthMm = null, double? cornerRadiusMm = null)
+    public void UpdateDesignStock(Thermalith.Core.Catalog.RollDefinition stock) => _canvasEditor.UpdateStock(stock);
+    public string? DesignStockName => _live.Canvas.StockName;
+    public Thermalith.Core.Catalog.RollDefinition? DesignStock => _live.Canvas.Stock;
+    public void SetDesignStock(Thermalith.Core.Catalog.RollDefinition stock) => _live = _live with { Canvas = _live.Canvas with { Stock = stock, StockName = stock.Name, OrientationDeg = Math.Abs(_live.Canvas.WidthMm - stock.WidthMm) < 0.1 ? 0 : 90 } };
+
+    public bool ApplyRoll(double widthMm, double heightMm, string? shape, int? dpi, double? printheadWidthMm = null, double? cornerRadiusMm = null, string? stockName = null)
     {
         // Printer/roll detection is setup, not an edit to an untouched new blank label.
         // Once the user changes anything (even canvas settings or deleting all elements),
@@ -959,6 +1166,7 @@ public sealed partial class EditorViewModel : ObservableObject
             {
                 WidthMm = rotated ? physH : physW,
                 HeightMm = rotated ? physW : physH,
+                StockName = stockName ?? _live.Canvas.StockName,
                 Shape = string.IsNullOrEmpty(shape) ? _live.Canvas.Shape : shape,
                 CornerRadiusMm = cornerRadiusMm ?? (shape == "rounded" ? 2 : 0),
                 Dpi = dpi is > 0 ? dpi.Value : _live.Canvas.Dpi,
@@ -985,7 +1193,7 @@ public sealed partial class EditorViewModel : ObservableObject
         // Printer/roll detection is setup, not an edit to an untouched new blank label.
         // Once the user changes anything (even canvas settings or deleting all elements),
         // Dirty remains true and the normal unsaved-work prompt still applies.
-        var keepClean = !Dirty && FilePath is null && !HasElements;
+        var keepClean = !Dirty;
         FlushGesture();
         _live = _live with
         {
@@ -1061,10 +1269,10 @@ public sealed partial class EditorViewModel : ObservableObject
 
     /// <summary>Turn the label 90° clockwise (rotate-right): the design view turns and content turns with
     /// it; the physical label dimensions stay fixed (label-orientation, §A).</summary>
-    public void RotateRight() => RotateLabel(clockwise: true);
+    public void RotateRight() { RequireEditable(); RotateLabel(clockwise: true); }
 
     /// <summary>Turn the label 90° counter-clockwise (rotate-left).</summary>
-    public void RotateLeft() => RotateLabel(clockwise: false);
+    public void RotateLeft() { RequireEditable(); RotateLabel(clockwise: false); }
 
     private void RotateLabel(bool clockwise)
     {
@@ -1119,7 +1327,7 @@ public sealed partial class EditorViewModel : ObservableObject
         SetSelection(value is null ? [] : [value.Id], value?.Id);
     }
 
-    partial void OnSelectedEditorChanged(ElementEditorViewModel? value) => OnPropertyChanged(nameof(InspectorTarget));
+    partial void OnSelectedEditorChanged(ElementEditorViewModel? value) { OnPropertyChanged(nameof(InspectorTarget)); RaiseCellState(); }
 
     /// <summary>The set of selected element ids in z-order.</summary>
     public IReadOnlyList<string> SelectedIds => _selectedIds;
@@ -1167,6 +1375,7 @@ public sealed partial class EditorViewModel : ObservableObject
         for (var i = _live.Elements.Count - 1; i >= 0; i--)
         {
             var e = _live.Elements[i];
+            if (!e.Visible || e.Id == _blockEdit?.Backdrop) continue;
             if (e is LineElement ln) // a line's bbox is degenerate (zero W/H) — hit-test the segment itself
             {
                 if (DistToSegmentMm(mmX, mmY,
@@ -1220,14 +1429,60 @@ public sealed partial class EditorViewModel : ObservableObject
         var ids = new List<string>();
         foreach (var e in _live.Elements)
         {
+            if (!e.Visible || e.Id == _blockEdit?.Backdrop) continue;
             var r = new Rect(e.X * s, e.Y * s, e.W * s, e.H * s);
             if (r.Intersects(marquee)) ids.Add(e.Id);
         }
         SetSelection(ids, ids.LastOrDefault());
     }
 
+    public ObservableCollection<SelRect> TableGuides { get; } = [];
+    private void UpdateTableGuides()
+    {
+        TableGuides.Clear();
+        var tables = _live.Elements.OfType<TableElement>().Where(t => t.Visible && t.Props.BorderWidthMm <= 0).Cast<LabelElement>().ToList();
+        if (tables.Count == 0) return;
+        var resolved = _renderer.Resolve(_live with { Elements = tables }, new ResolveContext());
+        var scale = DisplayPxPerMm;
+        foreach (var table in resolved.Elements.OfType<ResolvedTable>())
+        {
+            if (table.Rows <= 0 || table.Cols <= 0) continue;
+            var columns = TableMetrics.Edges(TableMetrics.AxisMm(table.ColumnWidthsMm, table.Cols, table.WMm));
+            var rows = TableMetrics.Edges(TableMetrics.AxisMm(table.RowHeightsMm, table.Rows, table.HMm));
+            for (var r = 0; r < table.Rows; r++)
+                for (var c = 0; c < table.Cols; c++)
+                {
+                    var cell = table.Cells[r][c];
+                    if (cell.Covered) continue;
+                    var rEnd = r + Math.Clamp(cell.RowSpan, 1, table.Rows - r);
+                    var cEnd = c + Math.Clamp(cell.ColSpan, 1, table.Cols - c);
+                    var left = (table.XMm + columns[c]) * scale;
+                    var top = (table.YMm + rows[r]) * scale;
+                    TableGuides.Add(new SelRect(left, top, (columns[cEnd] - columns[c]) * scale, (rows[rEnd] - rows[r]) * scale,
+                        false, table.RotationDeg, (table.XMm + table.WMm / 2) * scale - left, (table.YMm + table.HMm / 2) * scale - top));
+                }
+        }
+    }
+    public ObservableCollection<ParameterCue> ParameterCues { get; } = [];
+    private void UpdateParameterCues()
+    {
+        ParameterCues.Clear();
+        var names = (_live.Parameters ?? []).Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+        if (names.Count == 0) return;
+        var scale = _live.Canvas.Dpi / 25.4 * Zoom;
+        foreach (var element in _live.Elements.Where(e => e.Visible))
+        {
+            var references = Thermalith.Core.Tokens.TokenScanner.Scan(_live with { Elements = [element] }).Where(names.Contains).ToList();
+            if (references.Count == 0) continue;
+            var box = BoxFor(element);
+            ParameterCues.Add(new ParameterCue(box.XMm * scale, box.YMm * scale, box.WMm * scale, box.HMm * scale,
+                "ƒ " + string.Join(" ", references.Select(n => "{" + n + "}")), element.Rotation));
+        }
+    }
     private void UpdateSelectionVisuals()
     {
+        UpdateParameterCues();
+        UpdateTableGuides();
         if (InCellMode) // cell mode keeps the table's resize handles (resize it while editing); the dashed
         {               // element box is dropped (the edit frame outlines it) and the cell highlight is shown.
             SelectionRects.Clear();
@@ -1275,7 +1530,7 @@ public sealed partial class EditorViewModel : ObservableObject
         // Serial/DateTime hug their glyphs (size follows the value/font) → no resize handles. Auto-size
         // text DOES show handles: grabbing one converts it to a fixed box (handled in DragTo), which is the
         // discoverable way to get a fixed, wrapping box (GitHub #5).
-        var noHandles = primary is { Locked: true } or SerialElement or DateTimeElement;
+        var noHandles = primary is { Locked: true } or SerialElement or DateTimeElement or BlockElement;
         if (_selectedIds.Count == 1 && !noHandles && primary is LineElement ln)
         {
             SelectionBounds = new Rect(ln.X * s, ln.Y * s, ln.W * s, ln.H * s);
@@ -1415,8 +1670,7 @@ public sealed partial class EditorViewModel : ObservableObject
     private void RefreshAlignmentBounds()
     {
         FlushGesture();
-        var resolved = _renderer.Resolve(_live, new ResolveContext
-        {
+        var resolved = _renderer.Resolve(ParameterPrintDocument(), new ResolveContext { BlockProvider = LoadBlock, ParameterValues = BlockEditValues().Names, ParameterIdValues = BlockEditValues().Ids,
             Now = DateTimeOffset.Now,
             Assets = _assets,
             RowIndex = _previewRow is not null ? _previewRowIndex : 0,
@@ -1527,9 +1781,12 @@ public sealed partial class EditorViewModel : ObservableObject
     {
         if (HitTest(dx, dy) is not { } id) return false;
         if (_live.Elements.FirstOrDefault(e => e.Id == id) is not TableElement t) return false;
+        if (t.Locked || t.Props.Rows <= 0 || t.Props.Cols <= 0 || HitCell(t, dx, dy) is not { } cell) return false;
+        CommitCellEdit(); // finish the previous table before changing the editing target
+        _cellAnchorR = _cellFocusR = cell.R;
+        _cellAnchorC = _cellFocusC = cell.C;
         CellEditTableId = t.Id;
-        SetSelection([t.Id], t.Id); // keep the table the selected element (inspector context)
-        if (HitCell(t, dx, dy) is { } cell) { _cellAnchorR = _cellFocusR = cell.R; _cellAnchorC = _cellFocusC = cell.C; }
+        SetSelection([t.Id], t.Id); // selection redraw must see the NEW table's cell coordinates
         UpdateCellHighlight();
         return true;
     }
@@ -1553,7 +1810,7 @@ public sealed partial class EditorViewModel : ObservableObject
     /// <summary>Pointer-down in cell mode: select the cell under the point, or exit if outside the table.</summary>
     public bool CellPointerDown(double dx, double dy)
     {
-        if (CellTable is not { } t || HitCell(t, dx, dy) is not { } cell) { ExitCellMode(); return false; }
+        if (CellTable is not { } t || HitTest(dx, dy) != t.Id || HitCell(t, dx, dy) is not { } cell) { ExitCellMode(); return false; }
         _cellAnchorR = _cellFocusR = cell.R;
         _cellAnchorC = _cellFocusC = cell.C;
         UpdateCellHighlight();
@@ -1609,6 +1866,11 @@ public sealed partial class EditorViewModel : ObservableObject
     /// <summary>Grow a cell-index block to cover the full spans of any merged anchors inside it.</summary>
     private (int R0, int C0, int R1, int C1) ExpandSpans(TableElement t, int r0, int c0, int r1, int c1)
     {
+        if (t.Props.Rows <= 0 || t.Props.Cols <= 0) return (0, 0, 0, 0);
+        r0 = Math.Clamp(r0, 0, t.Props.Rows - 1);
+        c0 = Math.Clamp(c0, 0, t.Props.Cols - 1);
+        r1 = Math.Clamp(r1, r0, t.Props.Rows - 1);
+        c1 = Math.Clamp(c1, c0, t.Props.Cols - 1);
         var cells = t.Props.Cells;
         var changed = true;
         while (changed)
@@ -1619,8 +1881,10 @@ public sealed partial class EditorViewModel : ObservableObject
                 {
                     if (cells is null || r >= cells.Count || c >= cells[r].Count) continue;
                     var cell = cells[r][c];
-                    if (r + cell.RowSpan - 1 > r1) { r1 = r + cell.RowSpan - 1; changed = true; }
-                    if (c + cell.ColSpan - 1 > c1) { c1 = c + cell.ColSpan - 1; changed = true; }
+                    var endRow = r + Math.Clamp(cell.RowSpan, 1, t.Props.Rows - r) - 1;
+                    if (endRow > r1) { r1 = endRow; changed = true; }
+                    var endCol = c + Math.Clamp(cell.ColSpan, 1, t.Props.Cols - c) - 1;
+                    if (endCol > c1) { c1 = endCol; changed = true; }
                 }
         }
         return (r0, c0, Math.Min(r1, t.Props.Rows - 1), Math.Min(c1, t.Props.Cols - 1));
@@ -1717,7 +1981,7 @@ public sealed partial class EditorViewModel : ObservableObject
 
     private void RefreshEditingTypography()
     {
-        var resolved = _renderer.Resolve(_live, new ResolveContext { Now = DateTimeOffset.Now, Assets = _assets });
+        var resolved = _renderer.Resolve(ParameterPrintDocument(), new ResolveContext { BlockProvider = LoadBlock, ParameterValues = BlockEditValues().Names, ParameterIdValues = BlockEditValues().Ids, Now = DateTimeOffset.Now, Assets = _assets });
         if (InCellMode && CellTable is { } table && resolved.Elements.OfType<ResolvedTable>().FirstOrDefault(e => e.Id == table.Id) is { } rt)
         {
             var r = Math.Clamp(_cellFocusR, 0, rt.Rows - 1);
@@ -1748,7 +2012,7 @@ public sealed partial class EditorViewModel : ObservableObject
     /// with <paramref name="initial"/> (type-to-edit: the keystroke that started editing replaces it).</summary>
     public void BeginCellEdit(string? initial = null)
     {
-        if (CellTable is not { } t) return;
+        if (CellTable is not { } t || t.Props.Rows <= 0 || t.Props.Cols <= 0) return;
         var r = Math.Clamp(_cellFocusR, 0, t.Props.Rows - 1);
         var c = Math.Clamp(_cellFocusC, 0, t.Props.Cols - 1);
         var cells = t.Props.Cells;
@@ -1763,7 +2027,7 @@ public sealed partial class EditorViewModel : ObservableObject
     {
         if (!IsCellEditing) return;
         IsCellEditing = false;
-        if (CellTable is not { } t) return;
+        if (CellTable is not { } t || t.Props.Rows <= 0 || t.Props.Cols <= 0) return;
         var r = Math.Clamp(_cellFocusR, 0, t.Props.Rows - 1);
         var c = Math.Clamp(_cellFocusC, 0, t.Props.Cols - 1);
         var grid = Materialize(t.Props);
@@ -1811,10 +2075,21 @@ public sealed partial class EditorViewModel : ObservableObject
 
     // ── Cell operations on the selected block (right-click menu + Properties window mirror these) ──
 
+    private TableElement? FormattingTable => CellTable ?? (SelectedEditor is TableEditorViewModel table ? _live.Elements.FirstOrDefault(e => e.Id == table.Id) as TableElement : null);
+    [ObservableProperty] private double _cellBorderWidthMm = 0.2;
+    [ObservableProperty] private string _cellBorderStyle = "solid";
+    public void ApplyTableBorders(string preset)
+    {
+        if (FormattingTable is not { } table || table.Locked) return;
+        if (IsCellEditing) CommitCellEdit();
+        var (r0,c0,r1,c1) = InCellMode ? CellBlock : (0,0,table.Props.Rows-1,table.Props.Cols-1);
+        (r0,c0,r1,c1) = ExpandSpans(table,r0,c0,r1,c1);
+        CommitTable(table, TableBorderFormatting.Apply(table.Props,r0,c0,r1,c1,preset,new CellBorder { WidthMm = Math.Max(0,CellBorderWidthMm), Style = CellBorderStyle }));
+    }
     private void MutateSelectedCells(Func<TableCell, TableCell> map)
     {
-        if (CellTable is not { } t) return;
-        var (r0, c0, r1, c1) = CellBlock;
+        if (FormattingTable is not { } t || t.Locked) return;
+        var (r0, c0, r1, c1) = InCellMode ? CellBlock : (0,0,t.Props.Rows-1,t.Props.Cols-1);
         r1 = Math.Min(r1, t.Props.Rows - 1);
         c1 = Math.Min(c1, t.Props.Cols - 1);
         var grid = Materialize(t.Props);
@@ -1832,6 +2107,7 @@ public sealed partial class EditorViewModel : ObservableObject
         MarkDirty();
         RenderNow();
         UpdateCellHighlight();
+        RaiseCellState();
         RaiseState();
     }
 
@@ -1889,10 +2165,10 @@ public sealed partial class EditorViewModel : ObservableObject
     // Getters read the focus cell; setters apply to the selected block; RaiseCellState() refreshes them.
     private TableCell FocusCell()
     {
-        if (CellTable is not { } t) return new TableCell();
+        if (FormattingTable is not { } t) return new TableCell();
         var cells = t.Props.Cells;
-        var r = Math.Clamp(_cellFocusR, 0, t.Props.Rows - 1);
-        var c = Math.Clamp(_cellFocusC, 0, t.Props.Cols - 1);
+        var r = Math.Clamp(InCellMode ? _cellFocusR : 0, 0, t.Props.Rows - 1);
+        var c = Math.Clamp(InCellMode ? _cellFocusC : 0, 0, t.Props.Cols - 1);
         return cells is not null && r < cells.Count && c < cells[r].Count ? cells[r][c] : new TableCell();
     }
 
@@ -1941,6 +2217,7 @@ public sealed partial class EditorViewModel : ObservableObject
     public string CellTextColor { get => FocusCell().TextColor; set => SetCellTextColor(value == "white"); }
     public bool CellBold { get => FocusCell().Bold ?? false; set => MutateSelectedCells(c => c with { Bold = value }); }
     public bool CellItalic { get => FocusCell().Italic ?? false; set => MutateSelectedCells(c => c with { Italic = value }); }
+    public bool CellUnderline { get => FocusCell().Underline ?? false; set => MutateSelectedCells(c => c with { Underline = value }); }
     public string CellAlignH { get => FocusCell().Justify?.H ?? "center"; set => SetCellAlignH(value); }
     public string CellAlignV { get => FocusCell().Justify?.V ?? "middle"; set => SetCellAlignV(value); }
     public bool CellHeaderRow { get => CellTable?.Props.HeaderRow ?? false; set { if (CellTable is { } t) CommitTable(t, t.Props with { HeaderRow = value }); } }
@@ -1955,6 +2232,7 @@ public sealed partial class EditorViewModel : ObservableObject
         OnPropertyChanged(nameof(CellTextColor));
         OnPropertyChanged(nameof(CellBold));
         OnPropertyChanged(nameof(CellItalic));
+        OnPropertyChanged(nameof(CellUnderline));
         OnPropertyChanged(nameof(CellAlignH));
         OnPropertyChanged(nameof(CellAlignV));
         OnPropertyChanged(nameof(CellHeaderRow));
@@ -2022,7 +2300,11 @@ public sealed partial class EditorViewModel : ObservableObject
     private void UpdateCellHighlight()
     {
         CellHighlights.Clear();
-        if (CellTable is not { } t) return;
+        if (CellTable is not { } t || t.Props.Rows <= 0 || t.Props.Cols <= 0) return;
+        _cellAnchorR = Math.Clamp(_cellAnchorR, 0, t.Props.Rows - 1);
+        _cellFocusR = Math.Clamp(_cellFocusR, 0, t.Props.Rows - 1);
+        _cellAnchorC = Math.Clamp(_cellAnchorC, 0, t.Props.Cols - 1);
+        _cellFocusC = Math.Clamp(_cellFocusC, 0, t.Props.Cols - 1);
         var (r0, c0, r1, c1) = CellBlock;
         r1 = Math.Min(r1, t.Props.Rows - 1);
         c1 = Math.Min(c1, t.Props.Cols - 1);
@@ -2077,7 +2359,7 @@ public sealed partial class EditorViewModel : ObservableObject
     {
         if (InCellMode || PrimaryTarget() is not { } el) return false;
         PrimaryEditText = initial ?? PrimaryValue(el);
-        PrimaryEditMultiline = el is TextElement;
+        PrimaryEditMultiline = el is TextElement or QrElement;
         var s = _live.Canvas.Dpi / 25.4 * Zoom;
         PrimaryEditorRect = new Rect(el.X * s, el.Y * s, Math.Max(12, el.W * s), Math.Max(14, el.H * s));
         RefreshEditingTypography();
@@ -2129,20 +2411,20 @@ public sealed partial class EditorViewModel : ObservableObject
         _lastRenderAt = DateTimeOffset.Now; // advance the cadence even on a render error, so we don't busy-loop
         try
         {
-            var ctx = new ResolveContext
-            {
+            var ctx = new ResolveContext { BlockProvider = LoadBlock, ParameterValues = BlockEditValues().Names, ParameterIdValues = BlockEditValues().Ids,
                 Now = DateTimeOffset.Now,
                 Assets = _assets,
                 RowIndex = _previewRow is not null ? _previewRowIndex : 0,
                 Data = _previewRow?.ByName,
                 DataByOrdinal = _previewRow?.ByOrdinal,
+                ShowParameterReferences = !IsPrintView && ShowParameterReferences,
             };
             // The editor shows the upright design *view*; orientation is applied only at print/export
             // (RenderForPrint), where the view maps onto the fixed physical label (label-orientation, §A).
             var opts = new RenderOptions { ApplyOrientation = false };
             // Resolve once (with data-merge auto-size, #7) so we can both render and measure the actual
             // rendered bounds (#5) — the selection adorner/alignment track what's drawn, not the stored box.
-            var resolved = _renderer.Resolve(_live, ctx);
+            var resolved = _renderer.Resolve(ParameterPrintDocument(), ctx);
             int wpx, hpx;
             if (SmoothPreview)
             {
@@ -2151,20 +2433,23 @@ public sealed partial class EditorViewModel : ObservableObject
                 var baseWidth = Math.Max(1, (int)Math.Ceiling(_live.Canvas.WidthMm * _live.Canvas.Dpi / 25.4));
                 var baseHeight = Math.Max(1, (int)Math.Ceiling(_live.Canvas.HeightMm * _live.Canvas.Dpi / 25.4));
                 var pixelBudgetScale = Math.Sqrt(16_000_000.0 / ((double)baseWidth * baseHeight));
-                var scale = Math.Max(1, Math.Min(Math.Max(2, Zoom), Math.Min(4, pixelBudgetScale)));
-                var previewLabel = resolved with
+                var targetScale = Math.Max(2, 2 * Zoom * Math.Max(1, PreviewDisplayScale));
+                var scale = Math.Max(1, Math.Min(targetScale, Math.Min(8, pixelBudgetScale)));
+                if (!IsPrintView && resolved.Elements.OfType<ResolvedBlock>().Any())
+                    Preview = new Bitmap(new MemoryStream(_renderer.RenderDesignPreview(resolved,scale)));
+                else
                 {
-                    Canvas = resolved.Canvas with { Dpi = (int)Math.Round(resolved.Canvas.Dpi * scale) },
-                };
-                var gray = _renderer.RenderGray(previewLabel, opts);
-                Preview = PreviewImage.FromGray(gray);
+                    var gray = _renderer.RenderGray(resolved, opts with { PreviewRasterScale = scale });
+                    Preview = PreviewImage.FromGray(gray);
+                }
                 wpx = baseWidth;
                 hpx = baseHeight;
             }
             else
             {
                 var mono = _renderer.Render(resolved, opts);
-                Preview = PreviewImage.FromMonochrome(mono);
+                Preview = !IsPrintView && resolved.Elements.OfType<ResolvedBlock>().Any()
+                    ? new Bitmap(new MemoryStream(_renderer.RenderDesignPreview(resolved))) : PreviewImage.FromMonochrome(mono);
                 wpx = mono.WidthPx;
                 hpx = mono.HeightPx;
             }
@@ -2215,7 +2500,7 @@ public sealed partial class EditorViewModel : ObservableObject
         UpdateSafeArea();
     }
 
-    partial void OnShowSafeAreaChanged(bool value) => UpdateSafeArea();
+    partial void OnShowSafeAreaChanged(bool value) { UpdateSafeArea(); OnPropertyChanged(nameof(ShowWorkspaceGuides)); }
 
     // Preview geometry follows the configured stock outline. Printing retains its normal raster path.
     public Avalonia.Media.Geometry LabelOutlineGeometry => LabelOutline(0, 0);
@@ -2302,7 +2587,8 @@ public sealed partial class EditorViewModel : ObservableObject
     {
         Layers.Clear();
         for (var i = _live.Elements.Count - 1; i >= 0; i--) // frontmost first
-            Layers.Add(new LayerItemViewModel(_live.Elements[i], SetElementVisible, SetElementLocked));
+            if (_live.Elements[i].Id != _blockEdit?.Backdrop)
+                Layers.Add(new LayerItemViewModel(_live.Elements[i], SetElementVisible, SetElementLocked));
     }
 
     private void MarkDirty()
@@ -2314,9 +2600,11 @@ public sealed partial class EditorViewModel : ObservableObject
 
     private void RaiseState()
     {
+        OnPropertyChanged(nameof(HasSelectedBlock)); OnPropertyChanged(nameof(IsEditingBlock)); OnPropertyChanged(nameof(IsBlockReadOnly));
         OnPropertyChanged(nameof(CanUndo));
         OnPropertyChanged(nameof(CanRedo));
         OnPropertyChanged(nameof(DocumentName));
+        OnPropertyChanged(nameof(DocumentStateText));
         OnPropertyChanged(nameof(CanvasWidthMm));
         OnPropertyChanged(nameof(CanvasHeightMm));
         OnPropertyChanged(nameof(PrintheadWidthMm));
@@ -2327,3 +2615,9 @@ public sealed partial class EditorViewModel : ObservableObject
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 }
+
+public sealed record ParameterCue(double Left, double Top, double Width, double Height, string Label, double Angle);
+
+public sealed record SmartGuide(Point Start, Point End);
+
+public sealed record SpacingGuideVisual(Point Start, Point End, Point TickAStart, Point TickAEnd, Point TickBStart, Point TickBEnd, double LabelX, double LabelY, string Label);

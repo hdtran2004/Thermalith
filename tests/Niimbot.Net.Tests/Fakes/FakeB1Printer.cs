@@ -16,6 +16,9 @@ public sealed class FakeB1Printer
     /// <summary>Captured row/empty-row packets streamed during a print.</summary>
     public List<NiimbotPacket> ReceivedRows { get; } = [];
 
+    private int _completedPages;
+    private int _copies = 1;
+
     public IEnumerable<NiimbotPacket> Respond(NiimbotPacket request)
     {
         switch ((RequestCommandId)request.Command)
@@ -36,16 +39,21 @@ public sealed class FakeB1Printer
             case RequestCommandId.SetLabelType:
                 return [Resp(ResponseCommandId.In_SetLabelType, 1)];
             case RequestCommandId.PrintStart:
+                _completedPages = 0;
                 return [Resp(ResponseCommandId.In_PrintStart, 1)];
             case RequestCommandId.PageStart:
                 return [Resp(ResponseCommandId.In_PageStart, 1)];
             case RequestCommandId.SetPageSize:
+                _copies = request.Data.Length >= 6 ? (request.Data[4] << 8) | request.Data[5] : 1;
                 return [Resp(ResponseCommandId.In_SetPageSize, 1)];
             case RequestCommandId.PageEnd:
+                _completedPages += _copies;
                 return [Resp(ResponseCommandId.In_PageEnd, 1)];
             case RequestCommandId.PrintStatus:
                 // page=1, pagePrint=100, pageFeed=100 → finished.
-                return [Resp(ResponseCommandId.In_PrintStatus, 0x00, 0x01, 100, 100)];
+                return [Resp(ResponseCommandId.In_PrintStatus, (byte)(_completedPages >> 8), (byte)_completedPages, 100, 100)];
+            case (RequestCommandId)0x89:
+                return [Resp((ResponseCommandId)0x88, 0, 0, 1, (byte)(_completedPages >> 8), (byte)_completedPages, 100, 100, 0, 0, 0, 0, 0, 0)];
             case RequestCommandId.PrintEnd:
                 return [Resp(ResponseCommandId.In_PrintEnd, 1)];
             case RequestCommandId.PrintBitmapRow:
